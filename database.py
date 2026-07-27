@@ -1,6 +1,5 @@
 import secrets
 from dataclasses import dataclass
-from typing import cast
 
 import aiosqlite
 
@@ -89,19 +88,11 @@ async def init_db() -> None:
             status TEXT DEFAULT 'success'
         )
     """)
+    await db.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS anon_code TEXT;")
+    await db.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id INTEGER DEFAULT NULL;"
+    )
     await db.commit()
-
-    async with db.execute("PRAGMA table_info(users)") as cursor:
-        fetched = await cursor.fetchall()
-        rows = cast(list[tuple[int, str, str, int, object, int]], fetched)
-        columns = [row[1] for row in rows]
-        if "anon_code" not in columns:
-            await db.execute("ALTER TABLE users ADD COLUMN anon_code TEXT;")
-        if "referrer_id" not in columns:
-            await db.execute(
-                "ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL;"
-            )
-        await db.commit()
 
     await load_ban_cache()
 
@@ -110,8 +101,7 @@ async def load_ban_cache() -> None:
     global ban_cache
     db = get_db()
     async with db.execute("SELECT user_id FROM banned") as cursor:
-        fetched = await cursor.fetchall()
-        rows = cast(list[tuple[int]], fetched)
+        rows = await cursor.fetchall()
         ban_cache = {row[0] for row in rows}
 
 
@@ -141,9 +131,10 @@ async def register_user(user_id: int, referrer_id: int | None = None) -> UserSta
     async with db.execute(
         "SELECT anon_code FROM users WHERE user_id = ?", (user_id,)
     ) as cursor:
-        fetched = await cursor.fetchone()
-        row = cast(tuple[str | None] | None, fetched)
-        if row and row[0]:
+        row = await cursor.fetchone()
+        if row:
+            if row[0] is None:
+                raise RuntimeError("user exists but anon code is None")
             return UserStats(anon_code=row[0])
 
     anon_code = secrets.token_hex(4).upper()

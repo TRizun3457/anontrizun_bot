@@ -27,6 +27,11 @@ async def main() -> None:
     dp.include_router(admin.router)
     dp.include_router(payments.router)
 
+    bot_username = (await bot.get_me()).username
+
+    if bot_username is None:
+        raise RuntimeError("bot username is None")
+
     logger.info("🚀 Бот запущен...")
 
     await dp.start_polling(
@@ -34,6 +39,7 @@ async def main() -> None:
         allowed_updates=dp.resolve_used_update_types(),
         handle_signals=False,
         polling_timeout=60,
+        bot_username=bot_username,
     )
 
     if db._db_conn:

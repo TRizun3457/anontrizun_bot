@@ -20,6 +20,5 @@ BOT_TOKEN: str = token
 ADMIN_ID: int = int(admin_id_raw)
 ALLOWED_CHAT_ID: int = int(allowed_chat_id_raw)
 
-BOT_USERNAME: str = os.getenv("BOT_USERNAME", "anontrizun_bot")
 ALLOWED_CHAT_LINK: str = os.getenv("ALLOWED_CHAT_LINK", "https://t.me/trizunchat")
 DB_NAME: str = os.getenv("DB_NAME", "bot_data.db")

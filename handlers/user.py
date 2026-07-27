@@ -16,7 +16,7 @@ from aiogram.types import (
 )
 
 import database as db
-from config import ADMIN_ID, BOT_USERNAME
+from config import ADMIN_ID
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -27,14 +27,14 @@ class ReplyState(StatesGroup):
 
 
 @router.message(Command("anon"))
-async def anon_group_cmd(message: types.Message):
+async def anon_group_cmd(message: types.Message, bot_username: str):
     if message.chat.type in ("group", "supergroup"):
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
                         text="✉️ Написать анонимно",
-                        url=f"https://t.me/{BOT_USERNAME}?start=anon",
+                        url=f"https://t.me/{bot_username}?start=anon",
                     )
                 ]
             ]
@@ -231,7 +231,7 @@ async def handle_reactions(reaction: types.MessageReactionUpdated, bot: Bot):
 
 
 @router.inline_query()
-async def inline_query_handler(inline_query: types.InlineQuery):
+async def inline_query_handler(inline_query: types.InlineQuery, bot_username: str):
     user_id = inline_query.from_user.id
     user_stats = await db.register_user(user_id)
     results = []
@@ -243,7 +243,7 @@ async def inline_query_handler(inline_query: types.InlineQuery):
                 [
                     InlineKeyboardButton(
                         text="💬 Написать анонимно",
-                        url=f"https://t.me/{BOT_USERNAME}?start=anon",
+                        url=f"https://t.me/{bot_username}?start=anon",
                     )
                 ]
             ]
@@ -265,7 +265,7 @@ async def inline_query_handler(inline_query: types.InlineQuery):
                 [
                     InlineKeyboardButton(
                         text="✉️ Написать анонимно",
-                        url=f"https://t.me/{BOT_USERNAME}?start=share",
+                        url=f"https://t.me/{bot_username}?start=share",
                     )
                 ]
             ]
