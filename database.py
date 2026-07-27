@@ -45,7 +45,7 @@ def get_db() -> aiosqlite.Connection:
 
 
 async def init_db() -> None:
-    global _db_conn
+    global _db_conn, ban_cache
     _db_conn = await aiosqlite.connect(DB_NAME)
 
     db = get_db()
@@ -88,18 +88,18 @@ async def init_db() -> None:
             status TEXT DEFAULT 'success'
         )
     """)
-    await db.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS anon_code TEXT;")
-    await db.execute(
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id INTEGER DEFAULT NULL;"
-    )
+
+    for query in (
+        "ALTER TABLE users ADD COLUMN anon_code TEXT;",
+        "ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL;",
+    ):
+        try:
+            await db.execute(query)
+        except aiosqlite.OperationalError:
+            pass
+
     await db.commit()
 
-    await load_ban_cache()
-
-
-async def load_ban_cache() -> None:
-    global ban_cache
-    db = get_db()
     async with db.execute("SELECT user_id FROM banned") as cursor:
         rows = await cursor.fetchall()
         ban_cache = {row[0] for row in rows}
