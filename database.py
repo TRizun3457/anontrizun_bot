@@ -1,4 +1,5 @@
 import secrets
+from collections.abc import Sequence
 from typing import cast
 import aiosqlite
 from config import DB_NAME
@@ -59,11 +60,10 @@ async def init_db() -> None:
     """)
     await db.commit()
 
-
     async with db.execute("PRAGMA table_info(users)") as cursor:
         fetched = await cursor.fetchall()
-        rows = cast(list[tuple[int, str, str, int, object, int]], fetched)
-        columns = [row[1] for row in rows]
+        rows = cast(Sequence[Sequence[object]], fetched)
+        columns = [str(row[1]) for row in rows]
         if "anon_code" not in columns:
             _ = await db.execute("ALTER TABLE users ADD COLUMN anon_code TEXT;")
         if "referrer_id" not in columns:
@@ -78,8 +78,8 @@ async def load_ban_cache() -> None:
     db = get_db()
     async with db.execute("SELECT user_id FROM banned") as cursor:
         fetched = await cursor.fetchall()
-        rows = cast(list[tuple[int]], fetched)
-        ban_cache = {row[0] for row in rows}
+        rows = cast(Sequence[Sequence[object]], fetched)
+        ban_cache = {int(row[0]) for row in rows if isinstance(row[0], int)}
 
 
 async def is_banned(user_id: int) -> bool:
@@ -107,9 +107,11 @@ async def register_user(user_id: int, referrer_id: int | None = None) -> str:
     db = get_db()
     async with db.execute("SELECT anon_code FROM users WHERE user_id = ?", (user_id,)) as cursor:
         fetched = await cursor.fetchone()
-        row = cast(tuple[str | None] | None, fetched)
-        if row and row[0]:
-            return row[0]
+        if fetched is not None:
+            row = cast(Sequence[object], fetched)
+            code_val = row[0]
+            if isinstance(code_val, str) and code_val:
+                return code_val
 
     anon_code = secrets.token_hex(4).upper()
     _ = await db.execute(
@@ -131,15 +133,24 @@ async def get_user_stats(user_id: int) -> tuple[int, int, int, int, int, int, st
         (user_id,),
     ) as cursor:
         fetched = await cursor.fetchone()
-        res = cast(tuple[int, int, int, int, int, int, str | None] | None, fetched)
-        if res:
+        if fetched is not None:
+            row = cast(Sequence[object], fetched)
+            balance = row[0] if isinstance(row[0], int) else 0
+            air_purchased = row[1] if isinstance(row[1], int) else 0
+            priority_messages = row[2] if isinstance(row[2], int) else 0
+            sent_count = row[3] if isinstance(row[3], int) else 0
+            received_count = row[4] if isinstance(row[4], int) else 0
+            is_vip = row[5] if isinstance(row[5], int) else 0
+            anon_code = row[6] if isinstance(row[6], str) and row[6] else "НЕИЗВЕСТНО"
+
             return (
-                res[0],
-                res[1],
-                res[2],
-                res[3],
-                res[4],
-                res[5],
-                res[6] if res[6] is not None else "НЕИЗВЕСТНО",
+                balance,
+                air_purchased,
+                priority_messages,
+                sent_count,
+                received_count,
+                is_vip,
+                anon_code,
             )
+
         return (0, 0, 0, 0, 0, 0, "НЕИЗВЕСТНО")

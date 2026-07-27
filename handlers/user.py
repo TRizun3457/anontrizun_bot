@@ -291,9 +291,15 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
         is_priority = 1 if priority_count > 0 else 0
 
         if is_priority:
-            _ = await db.db_pool.execute("UPDATE users SET priority_messages = priority_messages - 1 WHERE user_id = ?", (user_id,))
+            _ = await db.db_pool.execute(
+                "UPDATE users SET priority_messages = priority_messages - 1 WHERE user_id = ?",
+                (user_id,)
+            )
 
-        _ = await db.db_pool.execute("UPDATE users SET sent_count = sent_count + 1 WHERE user_id = ?", (user_id,))
+        _ = await db.db_pool.execute(
+            "UPDATE users SET sent_count = sent_count + 1 WHERE user_id = ?",
+            (user_id,)
+        )
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="↩️ Ответить", callback_data=f"reply_{user_id}")]
