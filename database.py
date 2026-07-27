@@ -183,7 +183,7 @@ async def get_user_stats(user_id: int) -> UserStats:
 
 
 async def waste_priority_message(user_id: int):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "UPDATE users SET priority_messages = priority_messages - 1 WHERE user_id = ?",
@@ -193,7 +193,7 @@ async def waste_priority_message(user_id: int):
 
 
 async def increment_sent_count(user_id: int):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "UPDATE users SET sent_count = sent_count + 1 WHERE user_id = ?", (user_id,)
@@ -202,7 +202,7 @@ async def increment_sent_count(user_id: int):
 
 
 async def increment_received_count(user_id: int):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "UPDATE users SET received_count = received_count + 1 WHERE user_id = ?",
@@ -218,7 +218,7 @@ async def add_message(
     is_priority: bool,
     user_msg_id: int,
 ):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "INSERT INTO messages (admin_msg_id, sender_id, anon_code, is_priority, user_msg_id) VALUES (?, ?, ?, ?, ?)",
@@ -230,7 +230,7 @@ async def add_message(
 async def get_admin_msg_id_by_user_msg_id(
     sender_id: int, user_msg_id: int
 ) -> int | None:
-    db = await get_db()
+    db = get_db()
 
     async with db.execute(
         "SELECT admin_msg_id FROM messages WHERE sender_id = ? AND user_msg_id = ?",
@@ -244,7 +244,7 @@ async def get_admin_msg_id_by_user_msg_id(
 async def get_sender_with_message_by_admin_msg(
     admin_msg_id: int,
 ) -> SenderWithMessage | None:
-    db = await get_db()
+    db = get_db()
 
     async with db.execute(
         "SELECT sender_id, user_msg_id FROM messages WHERE admin_msg_id = ?",
@@ -265,7 +265,7 @@ async def get_sender_with_message_by_admin_msg(
 
 
 async def take_balance(amount: int, user_id: int):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "UPDATE users SET balance = balance - ? WHERE user_id = ?",
@@ -276,7 +276,7 @@ async def take_balance(amount: int, user_id: int):
 
 
 async def increment_priority_messages(user_id: int):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "UPDATE users SET priority_messages = priority_messages + 1 WHERE user_id = ?",
@@ -287,7 +287,7 @@ async def increment_priority_messages(user_id: int):
 
 
 async def set_vip(user_id: int, vip: bool = True):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "UPDATE users SET is_vip = ? WHERE user_id = ?",
@@ -301,7 +301,7 @@ async def set_vip(user_id: int, vip: bool = True):
 
 
 async def increment_air_purchased(user_id: int):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "UPDATE users SET air_purchased = air_purchased + 1 WHERE user_id = ?",
@@ -312,7 +312,7 @@ async def increment_air_purchased(user_id: int):
 
 
 async def get_banned_users() -> list[BannedUser]:
-    db = await get_db()
+    db = get_db()
 
     async with db.execute("SELECT user_id, anon_code FROM banned") as cursor:
         rows = await cursor.fetchall()
@@ -320,7 +320,7 @@ async def get_banned_users() -> list[BannedUser]:
 
 
 async def get_banned_user_id_by_anon_code(anon_code: str) -> int | None:
-    db = await get_db()
+    db = get_db()
 
     async with db.execute(
         "SELECT user_id FROM banned WHERE anon_code = ?", (anon_code,)
@@ -330,7 +330,7 @@ async def get_banned_user_id_by_anon_code(anon_code: str) -> int | None:
 
 
 async def get_sender_with_code_by_admin_msg(admin_msg_id: int) -> SenderWithCode | None:
-    db = await get_db()
+    db = get_db()
 
     async with db.execute(
         "SELECT sender_id, anon_code FROM messages WHERE admin_msg_id = ?",
@@ -341,7 +341,7 @@ async def get_sender_with_code_by_admin_msg(admin_msg_id: int) -> SenderWithCode
 
 
 async def create_payment(charge_id: str, user_id: int, payload: str):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "INSERT INTO payments (charge_id, user_id, payload, status) VALUES (?, ?, ?, 'success')",
@@ -352,7 +352,7 @@ async def create_payment(charge_id: str, user_id: int, payload: str):
 
 
 async def give_balance(amount: int, user_id: int):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "UPDATE users SET balance = balance + ? WHERE user_id = ?",
@@ -363,7 +363,7 @@ async def give_balance(amount: int, user_id: int):
 
 
 async def get_banned_anon_code_by_user_id(user_id: int) -> str:
-    db = await get_db()
+    db = get_db()
 
     async with db.execute(
         "SELECT anon_code FROM banned WHERE user_id = ?", (user_id,)
@@ -373,7 +373,7 @@ async def get_banned_anon_code_by_user_id(user_id: int) -> str:
 
 
 async def get_payment_user_id_by_charge_id(charge_id: str) -> int | None:
-    db = await get_db()
+    db = get_db()
 
     async with db.execute(
         "SELECT user_id FROM payments WHERE charge_id = ?", (charge_id,)
@@ -383,7 +383,7 @@ async def get_payment_user_id_by_charge_id(charge_id: str) -> int | None:
 
 
 async def set_payment_status_by_charge_id(charge_id: str, status: str):
-    db = await get_db()
+    db = get_db()
 
     await db.execute(
         "UPDATE payments SET status = ? WHERE charge_id = ?",
@@ -400,7 +400,7 @@ async def batch_set_payment_status_by_charge_ids(charge_ids: list[str], status: 
     if not charge_ids:
         return
 
-    db = await get_db()
+    db = get_db()
 
     placeholders = ", ".join(["?"] * len(charge_ids))
     await db.execute(
@@ -412,7 +412,7 @@ async def batch_set_payment_status_by_charge_ids(charge_ids: list[str], status: 
 
 
 async def get_success_charge_ids_by_user_id(user_id: int) -> list[str]:
-    db = await get_db()
+    db = get_db()
 
     async with db.execute(
         "SELECT charge_id FROM payments WHERE user_id = ? AND status = 'success'",

@@ -19,6 +19,7 @@ from config import ADMIN_ID
 router = Router()
 logger = getLogger(__name__)
 
+
 class ApologyState(StatesGroup):
     waiting_for_text: State = State()
 
@@ -188,11 +189,15 @@ async def process_successful_payment(message: types.Message, state: FSMContext) 
 
     elif payload == "buy_priority_msg":
         await db.increment_priority_messages(user_id)
-        reply_text = "🎉 <b>Оплата прошла успешно!</b> Вам начислен 1 приоритетный ответ."
+        reply_text = (
+            "🎉 <b>Оплата прошла успешно!</b> Вам начислен 1 приоритетный ответ."
+        )
 
     elif payload == "buy_vip_sub":
         await db.set_vip(user_id)
-        reply_text = "💎 <b>Огромное спасибо за поддержку!</b> Активировано VIP-оформление."
+        reply_text = (
+            "💎 <b>Огромное спасибо за поддержку!</b> Активировано VIP-оформление."
+        )
 
     elif payload == "buy_air_pack":
         await db.increment_air_purchased(user_id)
@@ -204,9 +209,7 @@ async def process_successful_payment(message: types.Message, state: FSMContext) 
         reply_text = "✍️ <b>Оплата получена!</b> Введите текст раскаяния:"
 
     if reply_text:
-        await message.answer(
-            reply_text, parse_mode=ParseMode.HTML
-        )
+        await message.answer(reply_text, parse_mode=ParseMode.HTML)
 
 
 @router.message(ApologyState.waiting_for_text)
@@ -281,7 +284,9 @@ async def refund_user_payments(message: types.Message, bot: Bot) -> None:
 
     if input_param.startswith("stx"):
         charge_id = input_param
-        refund_user_id = (await db.get_payment_user_id_by_charge_id(charge_id)) or ADMIN_ID
+        refund_user_id = (
+            await db.get_payment_user_id_by_charge_id(charge_id)
+        ) or ADMIN_ID
 
         try:
             await bot.refund_star_payment(
@@ -294,7 +299,8 @@ async def refund_user_payments(message: types.Message, bot: Bot) -> None:
             )
         except TelegramAPIError as err:
             await message.answer(
-                f"❌ Ошибка при возврате: <code>{err!r}</code>", parse_mode=ParseMode.HTML
+                f"❌ Ошибка при возврате: <code>{err!r}</code>",
+                parse_mode=ParseMode.HTML,
             )
         return
 
@@ -321,12 +327,11 @@ async def refund_user_payments(message: types.Message, bot: Bot) -> None:
             await bot.refund_star_payment(
                 user_id=target_user_id, telegram_payment_charge_id=charge_id
             )
-            await db.set_payment_status_by_charge_id(charge_id, "refunded")
             refunded_ids.append(charge_id)
         except TelegramAPIError:
             logger.exception("error while refunding star payments")
 
-        await db.batch_set_payment_status_by_charge_ids(refunded_ids, "refunded")
+    await db.batch_set_payment_status_by_charge_ids(refunded_ids, "refunded")
 
     await message.answer(
         f"✅ Успешно возвращено транзакций: <b>{len(refunded_ids)}</b>",
