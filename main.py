@@ -23,9 +23,11 @@ async def main() -> None:
 
     dp.message.middleware(ThrottlingMiddleware(limit=1.2))
 
-    dp.include_router(user.router)
-    dp.include_router(admin.router)
-    dp.include_router(payments.router)
+    dp.include_routers(
+        user.router,
+        admin.router,
+        payments.router,
+    )
 
     bot_username = (await bot.get_me()).username
 
