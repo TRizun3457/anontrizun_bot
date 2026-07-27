@@ -22,8 +22,6 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
-
-@final
 class ReplyState(StatesGroup):
     waiting_for_reply = State()
 
@@ -73,8 +71,7 @@ async def start_cmd(message: types.Message, command: CommandObject):
             "• <code>/ban</code> — забанить (в ответ на сообщение)\n"
             "• <code>/unban КОД</code> — разбанить\n"
             "• <code>/banlist</code> — список забаненных\n"
-            "• <code>/refund USER_ID</code> — возврат звёзд",
-            parse_mode=ParseMode.HTML,
+            "• <code>/refund USER_ID</code> — возврат звёзд"
         )
         await message.answer(admin_text, parse_mode=ParseMode.HTML)
         return
@@ -204,12 +201,8 @@ async def show_status(event: types.Message | types.CallbackQuery):
         await event.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-
 @router.message_reaction()
 async def handle_reactions(reaction: types.MessageReactionUpdated, bot: Bot) -> None:
-    if not db.db_pool:
-        return
-
     msg_id = reaction.message_id
     chat_id = reaction.chat.id
     new_reaction = reaction.new_reaction
@@ -306,12 +299,10 @@ async def handle_reply_button(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-
 @router.message(ReplyState.waiting_for_reply)
-async def send_reply_to_user(message: types.Message, state: FSMContext, bot: Bot) -> None:
-    if not db.db_pool:
-        return
-
+async def send_reply_to_user(
+    message: types.Message, state: FSMContext, bot: Bot
+) -> None:
     data = await state.get_data()
     sender_id = data.get("reply_to_user_id")
 
@@ -353,8 +344,8 @@ async def send_reply_to_user(message: types.Message, state: FSMContext, bot: Bot
 
 @router.message()
 async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
-    if message.chat.type != "private" or not message.from_user or not db.db_pool:
-        return
+    if message.chat.type != "private":
+        raise RuntimeError("message.chat.type not private")
     if message.from_user is None:
         raise RuntimeError("message.from_user is None")
 
