@@ -21,9 +21,11 @@ async def main() -> None:
 
     _ = dp.message.middleware(ThrottlingMiddleware(limit=1.2))
 
-    _ = dp.include_router(user.router)
-    _ = dp.include_router(admin.router)
-    _ = dp.include_router(payments.router)
+    dp.include_routers(
+        user.router,
+        admin.router,
+        payments.router,
+    )
 
     print("🚀 Бот успешно запущен в модульном режиме...")
 
