@@ -1,7 +1,8 @@
 import os
+
 from dotenv import load_dotenv
 
-_ = load_dotenv()
+load_dotenv()
 
 token = os.getenv("BOT_TOKEN")
 if not token:

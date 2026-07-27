@@ -21,7 +21,7 @@ class ThrottlingMiddleware(BaseMiddleware):
         self.user_timeouts = {}
         self.cleanup_interval = cleanup_interval
 
-        _ = asyncio.create_task(self._cleanup_loop())
+        asyncio.create_task(self._cleanup_loop())
 
     async def _cleanup_loop(self) -> None:
         """Фоновый цикл для удаления устаревших записей из памяти."""
