@@ -1,4 +1,5 @@
 import logging
+import random
 from typing import cast
 
 from aiogram import Bot, F, Router, types
@@ -20,6 +21,17 @@ from config import ADMIN_ID
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+CAT_KAOMOJI_LIST = [
+    "( =ω= )",
+    "(ฅ^•ﻌ•^ฅ)",
+    "(=^･ω･^=)",
+    "(✿^ω^)",
+    "(≡^∇^≡)",
+    "(=^-ω-^=)",
+    "(๑ↀᴥↀ๑)",
+    "(ฅ'ω'ฅ)",
+]
 
 
 class ReplyState(StatesGroup):
@@ -151,29 +163,59 @@ async def show_status(event: types.Message | types.CallbackQuery) -> None:
     user_stats = await db.register_user(user_id)
     banned = await db.is_banned(user_id)
 
+    cat_header, cat_vip, cat_air = random.sample(CAT_KAOMOJI_LIST, 3)
+
     code_to_show = user_stats.anon_code
     status_text = "🚫 Заблокирован" if banned else "✅ Активен"
-    vip_status = "💎 VIP Подписчик" if user_stats.is_vip else "❌ Нет"
-    air_status = (
-        "\n• <b>Статус:</b> ну и воздухан..." if user_stats.air_purchased > 0 else ""
-    )
+    vip_status = f"💎 VIP Подписчик {cat_vip}" if user_stats.is_vip else "❌ Нет"
 
     ach_count = await db.get_user_achievements_count(user_id)
     total_ach_count = len(db.ACHIEVEMENTS)
 
-    text = (
-        f"👤 <b>Статус аккаунта</b>\n\n"
-        f"• <b>Ваш код:</b> <code>{code_to_show}</code>\n"
-        f"• <b>ID:</b> <code>{user_id}</code>\n"
-        f"• <b>Баланс:</b> <b>{user_stats.balance}</b> ⭐️\n"
-        f"• <b>Состояние:</b> {status_text}\n"
-        f"• <b>VIP Поддержка:</b> {vip_status}\n"
-        f"• <b>Отправлено анонимок:</b> {user_stats.sent_count}\n"
-        f"• <b>Получено ответов:</b> {user_stats.received_count}\n"
-        f"• <b>Оплачено приоритетных ответов:</b> {user_stats.priority_messages}\n"
-        f"• <b>Куплено воздуха:</b> {user_stats.air_purchased} шт.{air_status}\n"
-        f"• <b>Достижений:</b> {ach_count}/{total_ach_count}\n"
+    air_badge = (
+        f"\n└ <b>Оценка:</b> <i>Ну и воздухан... {cat_air}</i>"
+        if user_stats.air_purchased > 0
+        else ""
     )
+
+    if user_stats.is_vip:
+        text = (
+            f"✨ <b>👑 VIP-ПРОФИЛЬ {cat_header} 👑</b> ✨\n"
+            f"⚡ <i>Премиум-статус активирован</i>\n\n"
+            f"🆔 <b>Идентификация</b>\n"
+            f"├ <b>Ваш код:</b> <code>{code_to_show}</code>\n"
+            f"├ <b>ID:</b> <code>{user_id}</code>\n"
+            f"└ <b>Состояние:</b> {status_text}\n\n"
+            f"💰 <b>Финансы и Статус</b>\n"
+            f"├ <b>Баланс:</b> <b>{user_stats.balance}</b> ⭐️\n"
+            f"└ <b>VIP Поддержка:</b> {vip_status}\n\n"
+            f"📈 <b>Статистика сообщений</b>\n"
+            f"├ <b>Отправлено анонимок:</b> <code>{user_stats.sent_count}</code> ✉️\n"
+            f"├ <b>Получено ответов:</b> <code>{user_stats.received_count}</code> 💬\n"
+            f"└ <b>Оплачено приоритетных:</b> <code>{user_stats.priority_messages}</code> ⭐\n\n"
+            f"🏆 <b>Достижения и Статусы</b>\n"
+            f"├ <b>Достижений:</b> <code>{ach_count}/{total_ach_count}</code> 🎖️\n"
+            f"└ <b>Куплено воздуха:</b> <code>{user_stats.air_purchased}</code> шт. 💨{air_badge}"
+        )
+    else:
+        text = (
+            f"👤 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b>\n"
+            f"─────────────────────\n\n"
+            f"🆔 <b>Идентификация</b>\n"
+            f"├ <b>Ваш код:</b> <code>{code_to_show}</code>\n"
+            f"├ <b>ID:</b> <code>{user_id}</code>\n"
+            f"└ <b>Состояние:</b> {status_text}\n\n"
+            f"💰 <b>Финансы</b>\n"
+            f"├ <b>Баланс:</b> <b>{user_stats.balance}</b> ⭐️\n"
+            f"└ <b>VIP Поддержка:</b> {vip_status}\n\n"
+            f"📈 <b>Статистика сообщений</b>\n"
+            f"├ <b>Отправлено анонимок:</b> <code>{user_stats.sent_count}</code> ✉️\n"
+            f"├ <b>Получено ответов:</b> <code>{user_stats.received_count}</code> 💬\n"
+            f"└ <b>Оплачено приоритетных:</b> <code>{user_stats.priority_messages}</code> ⭐\n\n"
+            f"🏆 <b>Достижения и Статусы</b>\n"
+            f"├ <b>Достижений:</b> <code>{ach_count}/{total_ach_count}</code> 🎖️\n"
+            f"└ <b>Куплено воздуха:</b> <code>{user_stats.air_purchased}</code> шт. 💨{air_badge}"
+        )
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -309,36 +351,52 @@ async def inline_query_handler(
                 reply_markup=kb,
             )
         )
+
+    ach_count = await db.get_user_achievements_count(user_id)
+    total_ach_count = len(db.ACHIEVEMENTS)
+    cat_inline = random.choice(CAT_KAOMOJI_LIST)
+
+    if user_stats.is_vip:
+        stats_text = (
+            f"✨ 👑 <b>VIP-ПРОФИЛЬ {cat_inline}</b> ✨\n"
+            f"💎 <b>Статус:</b> VIP Подписчик\n\n"
+            f"📊 <b>Статистика:</b>\n"
+            f"💨 <b>Воздуха:</b> <b>{user_stats.air_purchased}</b>\n"
+            f"⭐ <b>Приоритетов:</b> <b>{user_stats.priority_messages}</b>\n"
+            f"🏆 <b>Достижений:</b> <b>{ach_count}/{total_ach_count}</b>"
+        )
+        share_title = f"👑 Поделиться VIP статусом {cat_inline}"
     else:
-        ach_count = await db.get_user_achievements_count(user_id)
-        total_ach_count = len(db.ACHIEVEMENTS)
         stats_text = (
             f"📊 <b>Моя статистика:</b>\n\n"
             f"💨 Воздуха: <b>{user_stats.air_purchased}</b>\n"
             f"⭐ Приоритетов: <b>{user_stats.priority_messages}</b>\n"
             f"🏆 Достижений: <b>{ach_count}/{total_ach_count}</b>"
         )
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="✉️ Написать анонимно",
-                        url=f"https://t.me/{bot_username}?start=share",
-                    )
-                ]
-            ]
-        )
-        results.append(
-            InlineQueryResultArticle(
-                id="user_status_share",
-                title="📊 Поделиться статусом",
-                input_message_content=InputTextMessageContent(
-                    message_text=stats_text, parse_mode=ParseMode.HTML
-                ),
-                reply_markup=kb,
-            )
-        )
+        share_title = "📊 Поделиться статусом"
 
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✉️ Написать анонимно",
+                    url=f"https://t.me/{bot_username}?start=share",
+                )
+            ]
+        ]
+    )
+    results.append(
+        InlineQueryResultArticle(
+            id="user_status_share",
+            title=share_title,
+            input_message_content=InputTextMessageContent(
+                message_text=stats_text, parse_mode=ParseMode.HTML
+            ),
+            reply_markup=kb,
+        )
+    )
+
+    # Использование cast(list, results) полностью решает проблему ковариантности/инвариантности Union в type-checker
     await inline_query.answer(cast(list, results), cache_time=1)
 
 
@@ -442,6 +500,7 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
 
         await db.increment_sent_count(user_id)
 
+        # Проверка триггерных фраз для достижений
         msg_text = (message.text or message.caption or "").lower()
         if "42" in msg_text:
             await db.grant_achievement(user_id, "bro_42", bot)
