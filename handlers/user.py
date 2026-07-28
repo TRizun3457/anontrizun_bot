@@ -1,7 +1,6 @@
 import logging
 from typing import cast
 
-import aiosqlite
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
@@ -362,47 +361,35 @@ async def send_reply_to_user(
 ) -> None:
     data = await state.get_data()
     sender_id = data.get("reply_to_user_id")
-
-    if not isinstance(sender_id, int):
-        await message.answer("❌ Ошибка получения адресата.")
-        await state.clear()
-        return
-
     await state.clear()
+
+    if not sender_id:
+        await message.answer(
+            "❌ Ошибка: не удалось найти получателя.", parse_mode=ParseMode.HTML
+        )
+        return
 
     try:
         await bot.send_message(
             chat_id=sender_id,
-            text="💬 <b>Ответ от владельца:</b>",
+            text="📩 <b>Вам пришёл ответ на анонимное сообщение:</b>",
             parse_mode=ParseMode.HTML,
         )
-        sent_reply = await message.copy_to(chat_id=sender_id)
+        await message.copy_to(chat_id=sender_id)
 
         await db.increment_received_count(sender_id)
         await db.increment_answer_streak(sender_id)
-        user_stats = await db.register_user(sender_id)
-
-        await db.add_message(
-            message.message_id,
-            sender_id,
-            user_stats.anon_code,
-            False,
-            sent_reply.message_id,
-        )
-
         await db.check_and_grant_achievements(sender_id, bot)
 
-        await message.answer("🚀 Ответ успешно отправлен!", parse_mode=ParseMode.HTML)
+        await message.answer("✅ Ответ успешно отправлен!", parse_mode=ParseMode.HTML)
     except TelegramAPIError:
-        logger.exception("Reply error")
+        logger.exception("Error sending reply to user %s", sender_id)
         await message.answer(
-            "❌ Не удалось отправить ответ.", parse_mode=ParseMode.HTML
+            "❌ Не удалось доставить ответ пользователю.", parse_mode=ParseMode.HTML
         )
-    except aiosqlite.Error:
-        logger.exception("database error")
 
 
-@router.message()
+@router.message(~F.text.startswith("/"))
 async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
     if message.chat.type != "private" or message.from_user is None:
         return
