@@ -65,12 +65,19 @@ async def start_cmd(message: types.Message, command: CommandObject) -> None:
 
     if message.from_user.id == ADMIN_ID:
         admin_text = (
-            "👑 <b>Вы админ анонимного бота.</b>\n\n"
+            "👑 <b>Панель администратора</b>\n\n"
+            "<b>Управление блокировками:</b>\n"
             "• <code>/ban</code> — забанить (в ответ на сообщение)\n"
-            "• <code>/unban КОД</code> — разбанить\n"
-            "• <code>/banlist</code> — список забаненных\n"
-            "• <code>/refund USER_ID</code> — возврат звёзд\n"
-            "• <code>/grant USER_ID [ACH_ID]</code> — выдать достижение"
+            "• <code>/unban КОД|ID</code> — разбанить пользователя\n"
+            "• <code>/banlist</code> — список забаненных кодов\n\n"
+            "<b>Достижения и Баланс:</b>\n"
+            "• <code>/grant КОД|ID [ACH_ID]</code> — выдать достижение\n"
+            "• <code>/grant_all КОД|ID</code> — выдать все достижения\n"
+            "• <code>/achlist</code> — список всех ACH_ID достижений\n"
+            "• <code>/addbalance КОД|ID СУММА</code> — пополнить баланс Stars\n\n"
+            "<b>Финансы и Рассылка:</b>\n"
+            "• <code>/refund КОД|ID|STX_ID</code> — возврат звёзд\n"
+            "• <code>/broadcast</code> — рассылка сообщений пользователям"
         )
         await message.answer(admin_text, parse_mode=ParseMode.HTML)
         return

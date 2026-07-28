@@ -466,6 +466,49 @@ async def get_success_charge_ids_by_user_id(user_id: int) -> list[str]:
         return [row[0] for row in rows]
 
 
+async def get_all_user_ids() -> list[int]:
+    db = get_db()
+    async with db.execute("SELECT user_id FROM users") as cursor:
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+
+async def get_user_id_by_id_or_code(identifier: str) -> int | None:
+    db = get_db()
+    identifier = identifier.strip()
+    if identifier.isdigit():
+        uid = int(identifier)
+        async with db.execute(
+            "SELECT user_id FROM users WHERE user_id = ?", (uid,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return row[0]
+        async with db.execute(
+            "SELECT user_id FROM banned WHERE user_id = ?", (uid,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return row[0]
+        return uid
+
+    async with db.execute(
+        "SELECT user_id FROM users WHERE UPPER(anon_code) = UPPER(?)", (identifier,)
+    ) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            return row[0]
+
+    async with db.execute(
+        "SELECT user_id FROM banned WHERE UPPER(anon_code) = UPPER(?)", (identifier,)
+    ) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            return row[0]
+
+    return None
+
+
 async def grant_achievement(user_id: int, ach_id: str, bot: Bot | None = None) -> bool:
     if ach_id not in ACHIEVEMENTS:
         return False
@@ -499,6 +542,14 @@ async def grant_achievement(user_id: int, ach_id: str, bot: Bot | None = None) -
             pass
 
     return True
+
+
+async def grant_all_achievements(user_id: int, bot: Bot | None = None) -> int:
+    count = 0
+    for ach_id in ACHIEVEMENTS:
+        if await grant_achievement(user_id, ach_id, bot):
+            count += 1
+    return count
 
 
 async def get_user_achievements(user_id: int) -> list[str]:
