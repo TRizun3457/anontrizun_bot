@@ -176,3 +176,46 @@ async def decline_unban_handler(callback: types.CallbackQuery, bot: Bot) -> None
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()
+
+
+@router.message(Command("grant"))
+async def grant_achievement_cmd(message: types.Message, bot: Bot) -> None:
+    if not message.from_user or message.from_user.id != ADMIN_ID or not message.text:
+        return
+
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        await message.answer(
+            "⚠️ Пример: <code>/grant USER_ID [ACH_ID]</code>\nПо умолчанию выдаётся 'impossible'.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        target_user_id = int(args[1])
+    except ValueError:
+        await message.answer(
+            "❌ ID пользователя должен быть числом.", parse_mode=ParseMode.HTML
+        )
+        return
+
+    ach_id = args[2] if len(args) > 2 else "impossible"
+
+    if ach_id not in db.ACHIEVEMENTS:
+        await message.answer(
+            f"❌ Достижение <code>{ach_id}</code> не найдено.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    granted = await db.grant_achievement(target_user_id, ach_id, bot)
+    if granted:
+        await message.answer(
+            f"✅ Достижение <b>{db.ACHIEVEMENTS[ach_id]['title']}</b> успешно выдано пользователю <code>{target_user_id}</code>!",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await message.answer(
+            "⚠️ У пользователя уже есть это достижение или произошла ошибка.",
+            parse_mode=ParseMode.HTML,
+        )

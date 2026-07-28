@@ -31,6 +31,8 @@ async def pay_with_balance_or_invoice(
 
     if user_stats.balance >= price:
         await db.take_balance(price, user_id)
+        await db.increment_total_spent_stars(user_id, price)
+        await db.grant_achievement(user_id, "first_donate", bot)
 
         reply_text: str | None = None
 
@@ -45,6 +47,8 @@ async def pay_with_balance_or_invoice(
         elif item_type == "air":
             await db.increment_air_purchased(user_id)
             reply_text = "💨 <b>Оплачено с баланса!</b> Вы приобрели воздух."
+
+        await db.check_and_grant_achievements(user_id, bot)
 
         if isinstance(callback.message, types.Message) and reply_text:
             await callback.message.answer(
@@ -167,7 +171,9 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot: Bot) -
 
 
 @router.message(F.successful_payment)
-async def process_successful_payment(message: types.Message, state: FSMContext) -> None:
+async def process_successful_payment(
+    message: types.Message, state: FSMContext, bot: Bot
+) -> None:
     if not message.from_user or not message.successful_payment:
         return
 
@@ -175,10 +181,12 @@ async def process_successful_payment(message: types.Message, state: FSMContext) 
     payment = message.successful_payment
     charge_id = payment.telegram_payment_charge_id
     payload = payment.invoice_payload
+    stars_amount = payment.total_amount
 
     await db.register_user(user_id)
-
     await db.create_payment(charge_id, user_id, payload)
+    await db.increment_total_spent_stars(user_id, stars_amount)
+    await db.grant_achievement(user_id, "first_donate", bot)
 
     reply_text: str | None = None
 
@@ -207,6 +215,8 @@ async def process_successful_payment(message: types.Message, state: FSMContext) 
         await state.set_state(ApologyState.waiting_for_text)
         await state.update_data(paid_by_balance=False)
         reply_text = "✍️ <b>Оплата получена!</b> Введите текст раскаяния:"
+
+    await db.check_and_grant_achievements(user_id, bot)
 
     if reply_text:
         await message.answer(reply_text, parse_mode=ParseMode.HTML)

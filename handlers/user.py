@@ -11,6 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineQueryResult,
     InlineQueryResultArticle,
     InputTextMessageContent,
 )
@@ -27,7 +28,7 @@ class ReplyState(StatesGroup):
 
 
 @router.message(Command("anon"))
-async def anon_group_cmd(message: types.Message, bot_username: str):
+async def anon_group_cmd(message: types.Message, bot_username: str) -> None:
     if message.chat.type in ("group", "supergroup"):
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -49,11 +50,8 @@ async def anon_group_cmd(message: types.Message, bot_username: str):
 
 
 @router.message(CommandStart())
-async def start_cmd(message: types.Message, command: CommandObject):
-    if message.from_user is None:
-        raise RuntimeError("event.from_user is None")
-
-    if message.chat.type != "private":
+async def start_cmd(message: types.Message, command: CommandObject) -> None:
+    if message.from_user is None or message.chat.type != "private":
         return
 
     referrer_id: int | None = None
@@ -71,7 +69,8 @@ async def start_cmd(message: types.Message, command: CommandObject):
             "• <code>/ban</code> — забанить (в ответ на сообщение)\n"
             "• <code>/unban КОД</code> — разбанить\n"
             "• <code>/banlist</code> — список забаненных\n"
-            "• <code>/refund USER_ID</code> — возврат звёзд"
+            "• <code>/refund USER_ID</code> — возврат звёзд\n"
+            "• <code>/grant USER_ID [ACH_ID]</code> — выдать достижение"
         )
         await message.answer(admin_text, parse_mode=ParseMode.HTML)
         return
@@ -99,6 +98,11 @@ async def start_cmd(message: types.Message, command: CommandObject):
             [
                 InlineKeyboardButton(
                     text="📊 Мой статус / Баланс", callback_data="my_status"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏆 Мои достижения", callback_data="my_achievements"
                 )
             ],
             [
@@ -133,22 +137,23 @@ async def start_cmd(message: types.Message, command: CommandObject):
 
 @router.message(Command("status"))
 @router.callback_query(F.data == "my_status")
-async def show_status(event: types.Message | types.CallbackQuery):
+async def show_status(event: types.Message | types.CallbackQuery) -> None:
     if event.from_user is None:
-        raise RuntimeError("event.from_user is None")
+        return
 
     user_id = event.from_user.id
     user_stats = await db.register_user(user_id)
-
     banned = await db.is_banned(user_id)
 
     code_to_show = user_stats.anon_code
-
     status_text = "🚫 Заблокирован" if banned else "✅ Активен"
     vip_status = "💎 VIP Подписчик" if user_stats.is_vip else "❌ Нет"
     air_status = (
         "\n• <b>Статус:</b> ну и воздухан..." if user_stats.air_purchased > 0 else ""
     )
+
+    ach_count = await db.get_user_achievements_count(user_id)
+    total_ach_count = len(db.ACHIEVEMENTS)
 
     text = (
         f"👤 <b>Статус аккаунта</b>\n\n"
@@ -161,10 +166,16 @@ async def show_status(event: types.Message | types.CallbackQuery):
         f"• <b>Получено ответов:</b> {user_stats.received_count}\n"
         f"• <b>Оплачено приоритетных ответов:</b> {user_stats.priority_messages}\n"
         f"• <b>Куплено воздуха:</b> {user_stats.air_purchased} шт.{air_status}\n"
+        f"• <b>Достижений:</b> {ach_count}/{total_ach_count}\n"
     )
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏆 Мои достижения", callback_data="my_achievements"
+                )
+            ],
             [
                 InlineKeyboardButton(
                     text="💳 Пополнить баланс Stars", callback_data="deposit_menu"
@@ -195,10 +206,43 @@ async def show_status(event: types.Message | types.CallbackQuery):
 
     if isinstance(event, types.CallbackQuery):
         if isinstance(event.message, types.Message):
-            await event.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            await event.message.edit_text(
+                text, reply_markup=kb, parse_mode=ParseMode.HTML
+            )
         await event.answer()
     else:
         await event.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data == "my_achievements")
+async def show_achievements(callback: types.CallbackQuery) -> None:
+    if callback.from_user is None:
+        return
+
+    user_id = callback.from_user.id
+    unlocked_ids = await db.get_user_achievements(user_id)
+    total_ach_count = len(db.ACHIEVEMENTS)
+
+    if not unlocked_ids:
+        text = "🏆 <b>Ваши достижения</b>\n\nУ вас пока нет открытых достижений."
+    else:
+        text = f"🏆 <b>Открытые достижения ({len(unlocked_ids)}/{total_ach_count}):</b>\n\n"
+        for ach_id in unlocked_ids:
+            ach = db.ACHIEVEMENTS.get(ach_id)
+            if ach:
+                text += f"{ach['icon']} <b>{ach['title']}</b>\n<i>{ach['description']}</i>\n\n"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад в статус", callback_data="my_status")]
+        ]
+    )
+
+    if isinstance(callback.message, types.Message):
+        await callback.message.edit_text(
+            text, reply_markup=kb, parse_mode=ParseMode.HTML
+        )
+    await callback.answer()
 
 
 @router.message_reaction()
@@ -209,7 +253,6 @@ async def handle_reactions(reaction: types.MessageReactionUpdated, bot: Bot) -> 
 
     if chat_id == ADMIN_ID:
         res = await db.get_sender_with_message_by_admin_msg(msg_id)
-
         if res:
             try:
                 await bot.set_message_reaction(
@@ -220,21 +263,23 @@ async def handle_reactions(reaction: types.MessageReactionUpdated, bot: Bot) -> 
             except TelegramAPIError:
                 logger.exception("Reaction error")
     else:
-        msg_id = await db.get_admin_msg_id_by_user_msg_id(chat_id, msg_id)
-        if msg_id:
+        admin_msg_id = await db.get_admin_msg_id_by_user_msg_id(chat_id, msg_id)
+        if admin_msg_id:
             try:
                 await bot.set_message_reaction(
-                    chat_id=ADMIN_ID, message_id=msg_id, reaction=new_reaction
+                    chat_id=ADMIN_ID, message_id=admin_msg_id, reaction=new_reaction
                 )
             except TelegramAPIError:
                 logger.exception("Reaction error")
 
 
 @router.inline_query()
-async def inline_query_handler(inline_query: types.InlineQuery, bot_username: str):
+async def inline_query_handler(
+    inline_query: types.InlineQuery, bot_username: str
+) -> None:
     user_id = inline_query.from_user.id
     user_stats = await db.register_user(user_id)
-    results = []
+    results: list[InlineQueryResult] = []
 
     if user_id == ADMIN_ID:
         share_text = "✉️ <b>Задай мне анонимный вопрос!</b>\n\nНапиши всё, что думаешь — всё передастся анонимно!"
@@ -259,7 +304,14 @@ async def inline_query_handler(inline_query: types.InlineQuery, bot_username: st
             )
         )
     else:
-        stats_text = f"📊 <b>Моя статистика:</b>\n\n💨 Воздуха: <b>{user_stats.air_purchased}</b>\n⭐ Приоритетов: <b>{user_stats.priority_messages}</b>"
+        ach_count = await db.get_user_achievements_count(user_id)
+        total_ach_count = len(db.ACHIEVEMENTS)
+        stats_text = (
+            f"📊 <b>Моя статистика:</b>\n\n"
+            f"💨 Воздуха: <b>{user_stats.air_purchased}</b>\n"
+            f"⭐ Приоритетов: <b>{user_stats.priority_messages}</b>\n"
+            f"🏆 Достижений: <b>{ach_count}/{total_ach_count}</b>"
+        )
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -281,16 +333,14 @@ async def inline_query_handler(inline_query: types.InlineQuery, bot_username: st
             )
         )
 
-    await inline_query.answer(results, cache_time=1)  # ty:ignore[invalid-argument-type]
+    await inline_query.answer(cast(list, results), cache_time=1)
 
 
 @router.callback_query(F.data.startswith("reply_"))
-async def handle_reply_button(callback: types.CallbackQuery, state: FSMContext):
-    if callback.data is None:
-        raise RuntimeError("callback.data is None")
-
-    if not isinstance(callback.message, types.Message):
-        raise TypeError("callback.message is not Message")
+async def handle_reply_button(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if callback.data is None or not isinstance(callback.message, types.Message):
+        await callback.answer("Ошибка вызова кнопки.", show_alert=True)
+        return
 
     sender_id = int(callback.data.split("_")[1])
     await state.update_data(reply_to_user_id=sender_id)
@@ -307,10 +357,9 @@ async def send_reply_to_user(
     sender_id = data.get("reply_to_user_id")
 
     if not isinstance(sender_id, int):
-        msg = f"reply_to_user_id in state is {type(sender_id)}, expected int"
-        raise TypeError(msg)
-
-    sender_id = cast(int, sender_id)
+        await message.answer("❌ Ошибка получения адресата.")
+        await state.clear()
+        return
 
     await state.clear()
 
@@ -323,6 +372,7 @@ async def send_reply_to_user(
         sent_reply = await message.copy_to(chat_id=sender_id)
 
         await db.increment_received_count(sender_id)
+        await db.increment_answer_streak(sender_id)
         user_stats = await db.register_user(sender_id)
 
         await db.add_message(
@@ -332,6 +382,9 @@ async def send_reply_to_user(
             False,
             sent_reply.message_id,
         )
+
+        await db.check_and_grant_achievements(sender_id, bot)
+
         await message.answer("🚀 Ответ успешно отправлен!", parse_mode=ParseMode.HTML)
     except TelegramAPIError:
         logger.exception("Reply error")
@@ -344,10 +397,8 @@ async def send_reply_to_user(
 
 @router.message()
 async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
-    if message.chat.type != "private":
-        raise RuntimeError("message.chat.type not private")
-    if message.from_user is None:
-        raise RuntimeError("message.from_user is None")
+    if message.chat.type != "private" or message.from_user is None:
+        return
 
     if (
         message.refunded_payment
@@ -366,10 +417,10 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
         return
 
     user_id = message.from_user.id
-    user_stats = await db.register_user(user_id)
-
     if user_id == ADMIN_ID:
         return
+
+    user_stats = await db.register_user(user_id)
 
     if await db.is_banned(user_id):
         kb = InlineKeyboardMarkup(
@@ -393,8 +444,17 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
 
         if is_priority:
             await db.waste_priority_message(user_id)
+            await db.increment_priority_sent_count(user_id)
 
         await db.increment_sent_count(user_id)
+
+        msg_text = (message.text or message.caption or "").lower()
+        if "42" in msg_text:
+            await db.grant_achievement(user_id, "bro_42", bot)
+        if "67" in msg_text:
+            await db.grant_achievement(user_id, "degrade_67", bot)
+
+        await db.check_and_grant_achievements(user_id, bot)
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
