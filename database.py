@@ -90,6 +90,10 @@ ACHIEVEMENTS: dict[str, dict[str, str]] = {
 }
 
 
+def anon_code_fallback() -> str:
+    return "НЕИЗВЕСТНО"
+
+
 @dataclass
 class UserStats:
     balance: int = 0
@@ -98,7 +102,7 @@ class UserStats:
     sent_count: int = 0
     received_count: int = 0
     is_vip: bool = False
-    anon_code: str = "НЕИЗВЕСТНО"
+    anon_code: str = anon_code_fallback()
 
 
 @dataclass
@@ -228,8 +232,6 @@ async def register_user(user_id: int, referrer_id: int | None = None) -> UserSta
     ) as cursor:
         row = await cursor.fetchone()
         if row:
-            if row[0] is None:
-                raise RuntimeError("user exists but anon code is None")
             return await get_user_stats(user_id)
 
     anon_code = secrets.token_hex(4).upper()
@@ -261,7 +263,7 @@ async def get_user_stats(user_id: int) -> UserStats:
                 row[3],
                 row[4],
                 row[5] == 1,
-                row[6] if row[6] else "НЕИЗВЕСТНО",
+                row[6] if row[6] else anon_code_fallback(),
             )
             if row
             else UserStats()
@@ -423,7 +425,7 @@ async def get_banned_anon_code_by_user_id(user_id: int) -> str:
         "SELECT anon_code FROM banned WHERE user_id = ?", (user_id,)
     ) as cursor:
         row = await cursor.fetchone()
-        return "НЕИЗВЕСТНО" if row is None else row[0]
+        return anon_code_fallback() if row is None else row[0]
 
 
 async def get_payment_user_id_by_charge_id(charge_id: str) -> int | None:
