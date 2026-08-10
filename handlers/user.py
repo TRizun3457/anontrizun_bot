@@ -120,6 +120,11 @@ async def start_cmd(message: types.Message, command: CommandObject) -> None:
             ],
             [
                 InlineKeyboardButton(
+                    text="⚙️ Настройки профиля", callback_data="settings_menu"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="🏆 Мои достижения", callback_data="my_achievements"
                 )
             ],
@@ -163,24 +168,30 @@ async def show_status(event: types.Message | types.CallbackQuery) -> None:
     user_stats = await db.register_user(user_id)
     banned = await db.is_banned(user_id)
 
-    cat_header, cat_vip, cat_air = random.sample(CAT_KAOMOJI_LIST, 3)
+    use_cats = user_stats.is_vip and user_stats.show_vip_cats
+    cat_header = random.choice(CAT_KAOMOJI_LIST) if use_cats else ""
+    cat_vip = random.choice(CAT_KAOMOJI_LIST) if use_cats else ""
+    cat_air = random.choice(CAT_KAOMOJI_LIST) if use_cats else ""
 
     code_to_show = user_stats.anon_code
     status_text = "🚫 Заблокирован" if banned else "✅ Активен"
-    vip_status = f"💎 VIP Подписчик {cat_vip}" if user_stats.is_vip else "❌ Нет"
+    vip_status = (
+        f"💎 VIP Подписчик {cat_vip}".strip() if user_stats.is_vip else "❌ Нет"
+    )
 
     ach_count = await db.get_user_achievements_count(user_id)
     total_ach_count = len(db.ACHIEVEMENTS)
 
     air_badge = (
-        f"\n└ <b>Оценка:</b> <i>Ну и воздухан... {cat_air}</i>"
+        f"\n└ <b>Оценка:</b> <i>Ну и воздухан... {cat_air}</i>".strip()
         if user_stats.air_purchased > 0
         else ""
     )
 
     if user_stats.is_vip:
+        header = f"✨ 👑 <b>VIP-ПРОФИЛЬ {cat_header}</b> ✨".strip()
         text = (
-            f"✨ <b>👑 VIP-ПРОФИЛЬ {cat_header} 👑</b> ✨\n"
+            f"{header}\n"
             f"⚡ <i>Премиум-статус активирован</i>\n\n"
             f"🆔 <b>Идентификация</b>\n"
             f"├ <b>Ваш код:</b> <code>{code_to_show}</code>\n"
@@ -219,6 +230,11 @@ async def show_status(event: types.Message | types.CallbackQuery) -> None:
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⚙️ Настройки профиля", callback_data="settings_menu"
+                )
+            ],
             [
                 InlineKeyboardButton(
                     text="🏆 Мои достижения", callback_data="my_achievements"
@@ -260,6 +276,139 @@ async def show_status(event: types.Message | types.CallbackQuery) -> None:
         await event.answer()
     else:
         await event.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@router.message(Command("settings"))
+@router.callback_query(F.data == "settings_menu")
+async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None:
+    if event.from_user is None:
+        return
+
+    user_id = event.from_user.id
+    user_stats = await db.get_user_stats(user_id)
+
+    refresh_map = {
+        "never": "Никогда",
+        "daily": "Раз в 24 ч.",
+        "weekly": "Раз в 7 дней",
+    }
+    share_map = {
+        "full": "Полная информация",
+        "code_only": "Только код",
+        "stats_only": "Только статистика",
+    }
+
+    refresh_str = refresh_map.get(user_stats.code_auto_refresh, "Никогда")
+    share_str = share_map.get(user_stats.inline_share_mode, "Полная информация")
+    cats_str = "Включены ✅" if user_stats.show_vip_cats else "Выключены ❌"
+
+    text = (
+        f"⚙️ <b>НАСТРОЙКИ ПРОФИЛЯ</b>\n"
+        f"─────────────────────\n\n"
+        f"🔑 <b>Ваш анонимный код:</b> <code>{user_stats.anon_code}</code>\n\n"
+        f"• <b>Авто-обновление кода:</b> {refresh_str}\n"
+        f"• <b>Кастомизация котиков (VIP):</b> {cats_str}\n"
+        f"• <b>Режим шеринга в чатах:</b> {share_str}\n\n"
+        f"<i>Выберите параметр для изменения ниже:</i>"
+    )
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Обновить код вручную",
+                    callback_data="settings_refresh_code",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"⏱ Авто-смена кода: {refresh_str}",
+                    callback_data="settings_toggle_autorefresh",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🐱 Котики (VIP): {cats_str}",
+                    callback_data="settings_toggle_cats",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"📲 Инлайн шеринг: {share_str}",
+                    callback_data="settings_toggle_share",
+                )
+            ],
+            [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="my_status")],
+        ]
+    )
+
+    if isinstance(event, types.CallbackQuery):
+        if isinstance(event.message, types.Message):
+            await event.message.edit_text(
+                text, reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+        await event.answer()
+    else:
+        await event.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data == "settings_refresh_code")
+async def handle_refresh_code_manual(callback: types.CallbackQuery) -> None:
+    if callback.from_user is None:
+        return
+
+    user_id = callback.from_user.id
+    success, result = await db.regenerate_user_code(user_id)
+
+    if success:
+        await callback.answer(
+            f"✅ Ваш код успешно обновлен на: {result}", show_alert=True
+        )
+        await show_settings_menu(callback)
+    else:
+        await callback.answer(f"❌ {result}", show_alert=True)
+
+
+@router.callback_query(F.data == "settings_toggle_autorefresh")
+async def handle_toggle_autorefresh(callback: types.CallbackQuery) -> None:
+    if callback.from_user is None:
+        return
+
+    user_stats = await db.get_user_stats(callback.from_user.id)
+    cycle = {"never": "daily", "daily": "weekly", "weekly": "never"}
+    new_val = cycle.get(user_stats.code_auto_refresh, "never")
+
+    await db.update_user_setting(callback.from_user.id, "code_auto_refresh", new_val)
+    await callback.answer("⏱ Интервал авто-смены кода изменен.")
+    await show_settings_menu(callback)
+
+
+@router.callback_query(F.data == "settings_toggle_cats")
+async def handle_toggle_cats(callback: types.CallbackQuery) -> None:
+    if callback.from_user is None:
+        return
+
+    user_stats = await db.get_user_stats(callback.from_user.id)
+    new_val = 0 if user_stats.show_vip_cats else 1
+
+    await db.update_user_setting(callback.from_user.id, "show_vip_cats", new_val)
+    status_text = "включены" if new_val == 1 else "выключены"
+    await callback.answer(f"🐱 Котики в оформлении {status_text}.")
+    await show_settings_menu(callback)
+
+
+@router.callback_query(F.data == "settings_toggle_share")
+async def handle_toggle_share(callback: types.CallbackQuery) -> None:
+    if callback.from_user is None:
+        return
+
+    user_stats = await db.get_user_stats(callback.from_user.id)
+    cycle = {"full": "code_only", "code_only": "stats_only", "stats_only": "full"}
+    new_val = cycle.get(user_stats.inline_share_mode, "full")
+
+    await db.update_user_setting(callback.from_user.id, "inline_share_mode", new_val)
+    await callback.answer("📲 Вид отображения при шеринге изменен.")
+    await show_settings_menu(callback)
 
 
 @router.callback_query(F.data == "my_achievements")
@@ -354,26 +503,49 @@ async def inline_query_handler(
 
     ach_count = await db.get_user_achievements_count(user_id)
     total_ach_count = len(db.ACHIEVEMENTS)
-    cat_inline = random.choice(CAT_KAOMOJI_LIST)
 
-    if user_stats.is_vip:
+    use_cats = user_stats.is_vip and user_stats.show_vip_cats
+    cat_inline = random.choice(CAT_KAOMOJI_LIST) if use_cats else ""
+
+    share_mode = user_stats.inline_share_mode
+
+    if share_mode == "code_only":
         stats_text = (
-            f"✨ 👑 <b>VIP-ПРОФИЛЬ {cat_inline}</b> ✨\n"
-            f"💎 <b>Статус:</b> VIP Подписчик\n\n"
-            f"📊 <b>Статистика:</b>\n"
-            f"💨 <b>Воздуха:</b> <b>{user_stats.air_purchased}</b>\n"
-            f"⭐ <b>Приоритетов:</b> <b>{user_stats.priority_messages}</b>\n"
-            f"🏆 <b>Достижений:</b> <b>{ach_count}/{total_ach_count}</b>"
+            f"🔑 <b>Мой анонимный код:</b> <code>{user_stats.anon_code}</code>\n"
+            f"✉️ Напиши мне анонимное сообщение в боте!"
         )
-        share_title = f"👑 Поделиться VIP статусом {cat_inline}"
-    else:
+        share_title = "🔑 Поделиться только кодом"
+    elif share_mode == "stats_only":
         stats_text = (
-            f"📊 <b>Моя статистика:</b>\n\n"
+            f"📊 <b>Моя статистика:</b>\n"
             f"💨 Воздуха: <b>{user_stats.air_purchased}</b>\n"
             f"⭐ Приоритетов: <b>{user_stats.priority_messages}</b>\n"
             f"🏆 Достижений: <b>{ach_count}/{total_ach_count}</b>"
         )
-        share_title = "📊 Поделиться статусом"
+        share_title = "📊 Поделиться статистикой"
+    else:
+        if user_stats.is_vip:
+            header_vip = f"✨ 👑 <b>VIP-ПРОФИЛЬ {cat_inline}</b> ✨".strip()
+            stats_text = (
+                f"{header_vip}\n"
+                f"🔑 <b>Код:</b> <code>{user_stats.anon_code}</code>\n"
+                f"💎 <b>Статус:</b> VIP Подписчик\n\n"
+                f"📊 <b>Статистика:</b>\n"
+                f"💨 <b>Воздуха:</b> <b>{user_stats.air_purchased}</b>\n"
+                f"⭐ <b>Приоритетов:</b> <b>{user_stats.priority_messages}</b>\n"
+                f"🏆 <b>Достижений:</b> <b>{ach_count}/{total_ach_count}</b>"
+            )
+            share_title = f"👑 Поделиться VIP статусом {cat_inline}".strip()
+        else:
+            stats_text = (
+                f"👤 <b>Профиль анонима:</b>\n"
+                f"🔑 <b>Код:</b> <code>{user_stats.anon_code}</code>\n\n"
+                f"📊 <b>Статистика:</b>\n"
+                f"💨 Воздуха: <b>{user_stats.air_purchased}</b>\n"
+                f"⭐ Приоритетов: <b>{user_stats.priority_messages}</b>\n"
+                f"🏆 Достижений: <b>{ach_count}/{total_ach_count}</b>"
+            )
+            share_title = "📊 Поделиться статусом"
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -396,7 +568,6 @@ async def inline_query_handler(
         )
     )
 
-    # Использование cast(list, results) полностью решает проблему ковариантности/инвариантности Union в type-checker
     await inline_query.answer(cast(list, results), cache_time=1)
 
 
@@ -500,7 +671,7 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
 
         await db.increment_sent_count(user_id)
 
-        # Проверка триггерных фраз для достижений
+        # Trigger words check
         msg_text = (message.text or message.caption or "").lower()
         if "42" in msg_text:
             await db.grant_achievement(user_id, "bro_42", bot)

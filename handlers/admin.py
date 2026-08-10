@@ -50,6 +50,7 @@ async def ban_by_reply(message: types.Message, bot: Bot) -> None:
     sender_with_code = await db.get_sender_with_code_by_admin_msg(admin_msg_id)
 
     if sender_with_code:
+        # При бане код фиксируется и замораживается
         await db.ban_user(sender_with_code.sender_id, sender_with_code.anon_code)
 
         try:
@@ -65,7 +66,8 @@ async def ban_by_reply(message: types.Message, bot: Bot) -> None:
             )
             await bot.send_message(
                 chat_id=sender_with_code.sender_id,
-                text="❌ <b>Вы были заблокированы администратором.</b>\n\nВы можете подать заявку на разбан за 50 ⭐️.",
+                text="❌ <b>Вы были заблокированы администратором.</b>\n\n"
+                "Ваш код заморожен. Вы можете подать заявку на разбан за 50 ⭐️.",
                 reply_markup=kb,
                 parse_mode=ParseMode.HTML,
             )
@@ -75,7 +77,8 @@ async def ban_by_reply(message: types.Message, bot: Bot) -> None:
             logger.exception("error while sending ban message to user")
 
         await message.answer(
-            f"🚫 Пользователь (ID: <code>{sender_with_code.sender_id}</code>) заблокирован!\nКод: <code>{sender_with_code.anon_code}</code>\n<i>{notify_status}</i>",
+            f"🚫 Пользователь (ID: <code>{sender_with_code.sender_id}</code>) заблокирован!\n"
+            f"Код: <code>{sender_with_code.anon_code}</code> (Заморожен)\n<i>{notify_status}</i>",
             parse_mode=ParseMode.HTML,
         )
     else:
@@ -102,19 +105,23 @@ async def unban_by_code(message: types.Message, bot: Bot) -> None:
     user_id = await db.get_banned_user_id_by_anon_code(anon_code)
 
     if user_id:
-        await db.unban_user(user_id)
+        # Автоматическая регенерация кода при разбане (п. 4 ТЗ)
+        new_code = await db.unban_user(user_id)
 
         try:
             await bot.send_message(
                 chat_id=user_id,
-                text="✅ <b>Вы были разблокированы!</b>",
+                text=f"✅ <b>Вы были разблокированы!</b>\n\n"
+                f"Ваш анонимный код сброшен и сгенерирован заново: <code>{new_code}</code>",
                 parse_mode=ParseMode.HTML,
             )
         except TelegramAPIError:
             logger.exception("error while sending unblocked message to user")
 
         await message.answer(
-            f"✅ Пользователь с кодом <code>{anon_code}</code> успешно разбанен.",
+            f"✅ Пользователь разбанен!\n"
+            f"Старый код: <code>{anon_code}</code>\n"
+            f"Новый сгенерированный код: <code>{new_code}</code>",
             parse_mode=ParseMode.HTML,
         )
     else:
@@ -133,12 +140,14 @@ async def accept_unban_handler(callback: types.CallbackQuery, bot: Bot) -> None:
     user_id = await db.get_banned_user_id_by_anon_code(anon_code)
 
     if user_id:
-        await db.unban_user(user_id)
+        # Автоматическая регенерация нового кода при одобрении заявки
+        new_code = await db.unban_user(user_id)
 
         try:
             await bot.send_message(
                 chat_id=user_id,
-                text="✅ <b>Ваша заявка одобрена! Вы успешно разбанены.</b>",
+                text=f"✅ <b>Ваша заявка одобрена! Вы успешно разбанены.</b>\n\n"
+                f"Ваш новый анонимный код: <code>{new_code}</code>",
                 parse_mode=ParseMode.HTML,
             )
         except TelegramAPIError:
@@ -148,7 +157,8 @@ async def accept_unban_handler(callback: types.CallbackQuery, bot: Bot) -> None:
 
         current_text = callback.message.text or ""
         await callback.message.edit_text(
-            current_text + "\n\n<b>Статус: РАЗБАНЕН ✅</b>",
+            current_text
+            + f"\n\n<b>Статус: РАЗБАНЕН ✅ (Новый код: <code>{new_code}</code>)</b>",
             parse_mode=ParseMode.HTML,
         )
     else:

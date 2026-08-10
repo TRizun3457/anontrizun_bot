@@ -58,24 +58,24 @@ async def pay_with_balance_or_invoice(
 
         await callback.answer()
     else:
+        # Для обычных товаров выдается инвойс, кроме приоритета (п. 1 ТЗ)
         title_map = {
-            "priority": "⭐ Гарантированный ответ",
             "vip": "💎 VIP-Поддержка",
             "air": "💨 Покупка воздуха",
         }
         payload_map = {
-            "priority": "buy_priority_msg",
             "vip": "buy_vip_sub",
             "air": "buy_air_pack",
         }
-        await bot.send_invoice(
-            chat_id=user_id,
-            title=title_map[item_type],
-            description=f"Недостаточно средств на балансе. Прямая оплата {price} ⭐️",
-            payload=payload_map[item_type],
-            currency="XTR",
-            prices=[LabeledPrice(label=title_map[item_type], amount=price)],
-        )
+        if item_type in title_map:
+            await bot.send_invoice(
+                chat_id=user_id,
+                title=title_map[item_type],
+                description=f"Недостаточно средств на балансе. Прямая оплата {price} ⭐️",
+                payload=payload_map[item_type],
+                currency="XTR",
+                prices=[LabeledPrice(label=title_map[item_type], amount=price)],
+            )
         await callback.answer()
 
 
@@ -122,9 +122,31 @@ async def send_deposit_invoice(callback: types.CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(F.data == "buy_priority")
 async def handle_buy_priority(callback: types.CallbackQuery, bot: Bot) -> None:
-    await pay_with_balance_or_invoice(
-        callback.from_user.id, 1, "priority", callback, bot
-    )
+    user_id = callback.from_user.id
+    user_stats = await db.get_user_stats(user_id)
+
+    # Приоритет продается ИСКЛЮЧИТЕЛЬНО с баланса в боте (п. 1 ТЗ)
+    if user_stats.balance >= 1:
+        await pay_with_balance_or_invoice(user_id, 1, "priority", callback, bot)
+    else:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="💳 Пополнить баланс Stars", callback_data="deposit_menu"
+                    )
+                ]
+            ]
+        )
+        if isinstance(callback.message, types.Message):
+            await callback.message.answer(
+                "❌ <b>Недостаточно средств на балансе!</b>\n\n"
+                "Приоритет покупается <b>только с внутреннего баланса</b> (1 ⭐️).\n"
+                "Пополните баланс в меню ниже:",
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML,
+            )
+        await callback.answer()
 
 
 @router.callback_query(F.data == "buy_vip")
@@ -194,12 +216,6 @@ async def process_successful_payment(
         amount = int(payload.split("_")[1])
         await db.give_balance(amount, user_id)
         reply_text = f"🎉 <b>Баланс пополнен на {amount} Stars!</b>"
-
-    elif payload == "buy_priority_msg":
-        await db.increment_priority_messages(user_id)
-        reply_text = (
-            "🎉 <b>Оплата прошла успешно!</b> Вам начислен 1 приоритетный ответ."
-        )
 
     elif payload == "buy_vip_sub":
         await db.set_vip(user_id)

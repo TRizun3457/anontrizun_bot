@@ -1,5 +1,6 @@
 import secrets
 from dataclasses import dataclass
+from typing import Any
 
 import aiosqlite
 from aiogram import Bot
@@ -103,6 +104,9 @@ class UserStats:
     received_count: int = 0
     is_vip: bool = False
     anon_code: str = anon_code_fallback()
+    code_auto_refresh: str = "never"
+    show_vip_cats: bool = True
+    inline_share_mode: str = "full"
 
 
 @dataclass
@@ -165,7 +169,10 @@ async def init_db() -> None:
             anon_code TEXT,
             priority_sent_count INTEGER DEFAULT 0,
             total_spent_stars INTEGER DEFAULT 0,
-            answer_streak INTEGER DEFAULT 0
+            answer_streak INTEGER DEFAULT 0,
+            code_auto_refresh TEXT DEFAULT 'never',
+            show_vip_cats INTEGER DEFAULT 1,
+            inline_share_mode TEXT DEFAULT 'full'
         )
     """)
     await db.execute("""
@@ -185,12 +192,16 @@ async def init_db() -> None:
         )
     """)
 
+    # Dynamic migrations
     for query in (
         "ALTER TABLE users ADD COLUMN anon_code TEXT;",
         "ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL;",
         "ALTER TABLE users ADD COLUMN priority_sent_count INTEGER DEFAULT 0;",
         "ALTER TABLE users ADD COLUMN total_spent_stars INTEGER DEFAULT 0;",
         "ALTER TABLE users ADD COLUMN answer_streak INTEGER DEFAULT 0;",
+        "ALTER TABLE users ADD COLUMN code_auto_refresh TEXT DEFAULT 'never';",
+        "ALTER TABLE users ADD COLUMN show_vip_cats INTEGER DEFAULT 1;",
+        "ALTER TABLE users ADD COLUMN inline_share_mode TEXT DEFAULT 'full';",
     ):
         try:
             await db.execute(query)
@@ -218,11 +229,92 @@ async def ban_user(user_id: int, anon_code: str) -> None:
     ban_cache.add(user_id)
 
 
-async def unban_user(user_id: int) -> None:
+async def delete_old_user_code_records(user_id: int, old_code: str) -> None:
+    """
+    Удаляет старый анонимный код пользователя из всей базы данных (таблицы messages, banned),
+    чтобы полностью исключить хранение и возможность использования неактуальных кодов.
+    """
+    if not old_code or old_code == anon_code_fallback():
+        return
     db = get_db()
+    await db.execute(
+        "UPDATE messages SET anon_code = NULL WHERE sender_id = ? AND UPPER(anon_code) = UPPER(?)",
+        (user_id, old_code),
+    )
+    await db.execute(
+        "DELETE FROM banned WHERE user_id = ? AND UPPER(anon_code) = UPPER(?)",
+        (user_id, old_code),
+    )
+
+
+async def unban_user(user_id: int) -> str:
+    """
+    Разбанивает пользователя и АВТОМАТИЧЕСКИ генерирует ему новый код.
+    Старый код незамедлительно удаляется из всех таблиц БД.
+    Возвращает новый код пользователя.
+    """
+    db = get_db()
+
+    # Извлекаем старый код из бана или основной таблицы
+    async with db.execute(
+        "SELECT anon_code FROM banned WHERE user_id = ?", (user_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+        old_code = row[0] if row else None
+
+    if not old_code:
+        async with db.execute(
+            "SELECT anon_code FROM users WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            old_code = row[0] if row else None
+
+    new_anon_code = secrets.token_hex(4).upper()
+
+    await db.execute(
+        "UPDATE users SET anon_code = ? WHERE user_id = ?",
+        (new_anon_code, user_id),
+    )
     await db.execute("DELETE FROM banned WHERE user_id = ?", (user_id,))
+
+    # Мгновенная очистка старого кода из истории
+    if old_code:
+        await delete_old_user_code_records(user_id, old_code)
+
     await db.commit()
     ban_cache.discard(user_id)
+
+    return new_anon_code
+
+
+async def regenerate_user_code(user_id: int) -> tuple[bool, str]:
+    """
+    Регенерирует код пользователя, если он не забанен.
+    При этом старый код незамедлительно удаляется из всей базы данных.
+    Возвращает (success: bool, code_or_error_msg: str)
+    """
+    if await is_banned(user_id):
+        return False, "Вы заблокированы! Изменение кода заблокировано до разбана."
+
+    db = get_db()
+    async with db.execute(
+        "SELECT anon_code FROM users WHERE user_id = ?", (user_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+        old_code = row[0] if row else None
+
+    new_code = secrets.token_hex(4).upper()
+    await db.execute(
+        "UPDATE users SET anon_code = ? WHERE user_id = ?",
+        (new_code, user_id),
+    )
+
+    # Мгновенная очистка старого кода из истории
+    if old_code:
+        await delete_old_user_code_records(user_id, old_code)
+
+    await db.commit()
+    return True, new_code
 
 
 async def register_user(user_id: int, referrer_id: int | None = None) -> UserStats:
@@ -251,23 +343,43 @@ async def register_user(user_id: int, referrer_id: int | None = None) -> UserSta
 async def get_user_stats(user_id: int) -> UserStats:
     db = get_db()
     async with db.execute(
-        "SELECT balance, air_purchased, priority_messages, sent_count, received_count, is_vip, anon_code FROM users WHERE user_id = ?",
+        """
+        SELECT balance, air_purchased, priority_messages, sent_count, received_count,
+               is_vip, anon_code, code_auto_refresh, show_vip_cats, inline_share_mode
+        FROM users WHERE user_id = ?
+        """,
         (user_id,),
     ) as cursor:
         row = await cursor.fetchone()
         return (
             UserStats(
-                row[0],
-                row[1],
-                row[2],
-                row[3],
-                row[4],
-                row[5] == 1,
-                row[6] if row[6] else anon_code_fallback(),
+                balance=row[0],
+                air_purchased=row[1],
+                priority_messages=row[2],
+                sent_count=row[3],
+                received_count=row[4],
+                is_vip=row[5] == 1,
+                anon_code=row[6] if row[6] else anon_code_fallback(),
+                code_auto_refresh=row[7] if row[7] else "never",
+                show_vip_cats=row[8] == 1 if row[8] is not None else True,
+                inline_share_mode=row[9] if row[9] else "full",
             )
             if row
             else UserStats()
         )
+
+
+async def update_user_setting(user_id: int, key: str, value: Any) -> None:
+    allowed_keys = {"code_auto_refresh", "show_vip_cats", "inline_share_mode"}
+    if key not in allowed_keys:
+        raise ValueError(f"Недопустимый ключ настройки: {key}")
+
+    db = get_db()
+    await db.execute(
+        f"UPDATE users SET {key} = ? WHERE user_id = ?",
+        (value, user_id),
+    )
+    await db.commit()
 
 
 async def waste_priority_message(user_id: int):
@@ -398,7 +510,16 @@ async def get_sender_with_code_by_admin_msg(admin_msg_id: int) -> SenderWithCode
         (admin_msg_id,),
     ) as cursor:
         row = await cursor.fetchone()
-        return SenderWithCode(sender_id=row[0], anon_code=row[1]) if row else None
+        if not row:
+            return None
+
+        sender_id, anon_code = row[0], row[1]
+        # Если старый код сообщения был очищен, берем актуальный код пользователя
+        if not anon_code:
+            user_stats = await get_user_stats(sender_id)
+            anon_code = user_stats.anon_code
+
+        return SenderWithCode(sender_id=sender_id, anon_code=anon_code)
 
 
 async def create_payment(charge_id: str, user_id: int, payload: str):
