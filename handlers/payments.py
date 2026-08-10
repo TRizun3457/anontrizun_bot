@@ -58,7 +58,6 @@ async def pay_with_balance_or_invoice(
 
         await callback.answer()
     else:
-        # Для обычных товаров выдается инвойс, кроме приоритета (п. 1 ТЗ)
         title_map = {
             "vip": "💎 VIP-Поддержка",
             "air": "💨 Покупка воздуха",
@@ -125,7 +124,6 @@ async def handle_buy_priority(callback: types.CallbackQuery, bot: Bot) -> None:
     user_id = callback.from_user.id
     user_stats = await db.get_user_stats(user_id)
 
-    # Приоритет продается ИСКЛЮЧИТЕЛЬНО с баланса в боте (п. 1 ТЗ)
     if user_stats.balance >= 1:
         await pay_with_balance_or_invoice(user_id, 1, "priority", callback, bot)
     else:

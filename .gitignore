@@ -2,25 +2,26 @@
 venv/
 env/
 
-
 .env
 *.env
-
+!.env.example
 
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 
-
 __pycache__/
+pycache/
 *.py[cod]
+*.pyo
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 .vscode/
 .idea/
 
-
 *.log
-
-!.env.example
-
-.ruff_cache

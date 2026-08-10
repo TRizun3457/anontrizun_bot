@@ -50,7 +50,6 @@ async def ban_by_reply(message: types.Message, bot: Bot) -> None:
     sender_with_code = await db.get_sender_with_code_by_admin_msg(admin_msg_id)
 
     if sender_with_code:
-        # При бане код фиксируется и замораживается
         await db.ban_user(sender_with_code.sender_id, sender_with_code.anon_code)
 
         try:
@@ -105,7 +104,6 @@ async def unban_by_code(message: types.Message, bot: Bot) -> None:
     user_id = await db.get_banned_user_id_by_anon_code(anon_code)
 
     if user_id:
-        # Автоматическая регенерация кода при разбане (п. 4 ТЗ)
         new_code = await db.unban_user(user_id)
 
         try:
@@ -140,7 +138,6 @@ async def accept_unban_handler(callback: types.CallbackQuery, bot: Bot) -> None:
     user_id = await db.get_banned_user_id_by_anon_code(anon_code)
 
     if user_id:
-        # Автоматическая регенерация нового кода при одобрении заявки
         new_code = await db.unban_user(user_id)
 
         try:

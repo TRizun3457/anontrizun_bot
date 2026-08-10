@@ -106,7 +106,11 @@ class UserStats:
     anon_code: str = anon_code_fallback()
     code_auto_refresh: str = "never"
     show_vip_cats: bool = True
-    inline_share_mode: str = "full"
+    show_air: bool = True
+    show_priority: bool = True
+    show_sent: bool = True
+    show_received: bool = True
+    show_achievements: bool = True
 
 
 @dataclass
@@ -136,11 +140,9 @@ def get_db() -> aiosqlite.Connection:
 async def init_db() -> None:
     global _db_conn, ban_cache
     _db_conn = await aiosqlite.connect(DB_NAME)
-
     db = get_db()
     await db.execute("PRAGMA journal_mode=WAL;")
     await db.execute("PRAGMA synchronous=NORMAL;")
-
     await db.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             admin_msg_id INTEGER PRIMARY KEY,
@@ -191,8 +193,6 @@ async def init_db() -> None:
             PRIMARY KEY (user_id, ach_id)
         )
     """)
-
-    # Dynamic migrations
     for query in (
         "ALTER TABLE users ADD COLUMN anon_code TEXT;",
         "ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL;",
@@ -202,14 +202,17 @@ async def init_db() -> None:
         "ALTER TABLE users ADD COLUMN code_auto_refresh TEXT DEFAULT 'never';",
         "ALTER TABLE users ADD COLUMN show_vip_cats INTEGER DEFAULT 1;",
         "ALTER TABLE users ADD COLUMN inline_share_mode TEXT DEFAULT 'full';",
+        "ALTER TABLE users ADD COLUMN show_air INTEGER DEFAULT 1;",
+        "ALTER TABLE users ADD COLUMN show_priority INTEGER DEFAULT 1;",
+        "ALTER TABLE users ADD COLUMN show_sent INTEGER DEFAULT 1;",
+        "ALTER TABLE users ADD COLUMN show_received INTEGER DEFAULT 1;",
+        "ALTER TABLE users ADD COLUMN show_achievements INTEGER DEFAULT 1;",
     ):
         try:
             await db.execute(query)
         except aiosqlite.OperationalError:
             pass
-
     await db.commit()
-
     async with db.execute("SELECT user_id FROM banned") as cursor:
         rows = await cursor.fetchall()
         ban_cache = {row[0] for row in rows}
@@ -245,6 +248,7 @@ async def delete_old_user_code_records(user_id: int, old_code: str) -> None:
         "DELETE FROM banned WHERE user_id = ? AND UPPER(anon_code) = UPPER(?)",
         (user_id, old_code),
     )
+    await db.commit()
 
 
 async def unban_user(user_id: int) -> str:
@@ -254,36 +258,27 @@ async def unban_user(user_id: int) -> str:
     Возвращает новый код пользователя.
     """
     db = get_db()
-
-    # Извлекаем старый код из бана или основной таблицы
     async with db.execute(
         "SELECT anon_code FROM banned WHERE user_id = ?", (user_id,)
     ) as cursor:
         row = await cursor.fetchone()
         old_code = row[0] if row else None
-
     if not old_code:
         async with db.execute(
             "SELECT anon_code FROM users WHERE user_id = ?", (user_id,)
         ) as cursor:
             row = await cursor.fetchone()
             old_code = row[0] if row else None
-
     new_anon_code = secrets.token_hex(4).upper()
-
     await db.execute(
         "UPDATE users SET anon_code = ? WHERE user_id = ?",
         (new_anon_code, user_id),
     )
     await db.execute("DELETE FROM banned WHERE user_id = ?", (user_id,))
-
-    # Мгновенная очистка старого кода из истории
     if old_code:
         await delete_old_user_code_records(user_id, old_code)
-
     await db.commit()
     ban_cache.discard(user_id)
-
     return new_anon_code
 
 
@@ -295,24 +290,19 @@ async def regenerate_user_code(user_id: int) -> tuple[bool, str]:
     """
     if await is_banned(user_id):
         return False, "Вы заблокированы! Изменение кода заблокировано до разбана."
-
     db = get_db()
     async with db.execute(
         "SELECT anon_code FROM users WHERE user_id = ?", (user_id,)
     ) as cursor:
         row = await cursor.fetchone()
         old_code = row[0] if row else None
-
     new_code = secrets.token_hex(4).upper()
     await db.execute(
         "UPDATE users SET anon_code = ? WHERE user_id = ?",
         (new_code, user_id),
     )
-
-    # Мгновенная очистка старого кода из истории
     if old_code:
         await delete_old_user_code_records(user_id, old_code)
-
     await db.commit()
     return True, new_code
 
@@ -325,7 +315,6 @@ async def register_user(user_id: int, referrer_id: int | None = None) -> UserSta
         row = await cursor.fetchone()
         if row:
             return await get_user_stats(user_id)
-
     anon_code = secrets.token_hex(4).upper()
     await db.execute(
         "INSERT OR IGNORE INTO users (user_id, anon_code, referrer_id) VALUES (?, ?, ?)",
@@ -336,7 +325,6 @@ async def register_user(user_id: int, referrer_id: int | None = None) -> UserSta
         (anon_code, user_id),
     )
     await db.commit()
-
     return await get_user_stats(user_id)
 
 
@@ -345,7 +333,8 @@ async def get_user_stats(user_id: int) -> UserStats:
     async with db.execute(
         """
         SELECT balance, air_purchased, priority_messages, sent_count, received_count,
-               is_vip, anon_code, code_auto_refresh, show_vip_cats, inline_share_mode
+               is_vip, anon_code, code_auto_refresh, show_vip_cats, show_achievements,
+               show_air, show_priority, show_sent, show_received
         FROM users WHERE user_id = ?
         """,
         (user_id,),
@@ -362,7 +351,11 @@ async def get_user_stats(user_id: int) -> UserStats:
                 anon_code=row[6] if row[6] else anon_code_fallback(),
                 code_auto_refresh=row[7] if row[7] else "never",
                 show_vip_cats=row[8] == 1 if row[8] is not None else True,
-                inline_share_mode=row[9] if row[9] else "full",
+                show_achievements=row[9] == 1 if row[9] is not None else True,
+                show_air=row[10] == 1 if row[10] is not None else True,
+                show_priority=row[11] == 1 if row[11] is not None else True,
+                show_sent=row[12] == 1 if row[12] is not None else True,
+                show_received=row[13] == 1 if row[13] is not None else True,
             )
             if row
             else UserStats()
@@ -370,10 +363,17 @@ async def get_user_stats(user_id: int) -> UserStats:
 
 
 async def update_user_setting(user_id: int, key: str, value: Any) -> None:
-    allowed_keys = {"code_auto_refresh", "show_vip_cats", "inline_share_mode"}
+    allowed_keys = {
+        "code_auto_refresh",
+        "show_vip_cats",
+        "show_air",
+        "show_priority",
+        "show_sent",
+        "show_received",
+        "show_achievements",
+    }
     if key not in allowed_keys:
         raise ValueError(f"Недопустимый ключ настройки: {key}")
-
     db = get_db()
     await db.execute(
         f"UPDATE users SET {key} = ? WHERE user_id = ?",
@@ -432,7 +432,7 @@ async def get_admin_msg_id_by_user_msg_id(
         (sender_id, user_msg_id),
     ) as cursor:
         row = await cursor.fetchone()
-    return row[0] if row else None
+        return row[0] if row else None
 
 
 async def get_sender_with_message_by_admin_msg(
@@ -444,11 +444,9 @@ async def get_sender_with_message_by_admin_msg(
         (admin_msg_id,),
     ) as cursor:
         row = await cursor.fetchone()
-
-    if row is None or any(x is None for x in row):
-        return None
-
-    return SenderWithMessage(row[0], row[1])
+        if row is None or any(x is None for x in row):
+            return None
+        return SenderWithMessage(row[0], row[1])
 
 
 async def take_balance(amount: int, user_id: int):
@@ -512,13 +510,10 @@ async def get_sender_with_code_by_admin_msg(admin_msg_id: int) -> SenderWithCode
         row = await cursor.fetchone()
         if not row:
             return None
-
         sender_id, anon_code = row[0], row[1]
-        # Если старый код сообщения был очищен, берем актуальный код пользователя
         if not anon_code:
             user_stats = await get_user_stats(sender_id)
             anon_code = user_stats.anon_code
-
         return SenderWithCode(sender_id=sender_id, anon_code=anon_code)
 
 
@@ -614,28 +609,24 @@ async def get_user_id_by_id_or_code(identifier: str) -> int | None:
             if row:
                 return row[0]
         return uid
-
     async with db.execute(
         "SELECT user_id FROM users WHERE UPPER(anon_code) = UPPER(?)", (identifier,)
     ) as cursor:
         row = await cursor.fetchone()
         if row:
             return row[0]
-
     async with db.execute(
         "SELECT user_id FROM banned WHERE UPPER(anon_code) = UPPER(?)", (identifier,)
     ) as cursor:
         row = await cursor.fetchone()
         if row:
             return row[0]
-
     return None
 
 
 async def grant_achievement(user_id: int, ach_id: str, bot: Bot | None = None) -> bool:
     if ach_id not in ACHIEVEMENTS:
         return False
-
     db = get_db()
     async with db.execute(
         "SELECT 1 FROM user_achievements WHERE user_id = ? AND ach_id = ?",
@@ -643,17 +634,15 @@ async def grant_achievement(user_id: int, ach_id: str, bot: Bot | None = None) -
     ) as cursor:
         if await cursor.fetchone():
             return False
-
     await db.execute(
         "INSERT OR IGNORE INTO user_achievements (user_id, ach_id) VALUES (?, ?)",
         (user_id, ach_id),
     )
     await db.commit()
-
     if bot:
         ach = ACHIEVEMENTS[ach_id]
         text = (
-            f"🏆 <b>Новое достижение разблокировано!</b>\n\n"
+            "🏆 <b>Новое достижение разблокировано!</b>\n\n"
             f"{ach['icon']} <b>{ach['title']}</b>\n"
             f"<i>{ach['description']}</i>"
         )
@@ -663,7 +652,6 @@ async def grant_achievement(user_id: int, ach_id: str, bot: Bot | None = None) -
             )
         except TelegramAPIError:
             pass
-
     return True
 
 
@@ -731,45 +719,36 @@ async def check_and_grant_achievements(user_id: int, bot: Bot | None = None):
         (user_id,),
     ) as cursor:
         row = await cursor.fetchone()
-
-    if not row:
-        return
-
-    (
-        air_purchased,
-        sent_count,
-        received_count,
-        is_vip,
-        priority_sent_count,
-        total_spent_stars,
-        answer_streak,
-    ) = row
-
+        if not row:
+            return
+        (
+            air_purchased,
+            sent_count,
+            received_count,
+            is_vip,
+            priority_sent_count,
+            total_spent_stars,
+            answer_streak,
+        ) = row
     if air_purchased >= 1:
         await grant_achievement(user_id, "air_1", bot)
     if air_purchased >= 10:
         await grant_achievement(user_id, "air_10", bot)
     if air_purchased >= 100:
         await grant_achievement(user_id, "air_100", bot)
-
     if is_vip:
         await grant_achievement(user_id, "vip_access", bot)
-
     if sent_count >= 1:
         await grant_achievement(user_id, "anon_first", bot)
     if sent_count >= 100:
         await grant_achievement(user_id, "who_are_you", bot)
     if sent_count >= 200:
         await grant_achievement(user_id, "secret_fan", bot)
-
     if (priority_sent_count or 0) >= 10:
         await grant_achievement(user_id, "vip_person", bot)
-
     if (sent_count - received_count) >= 20:
         await grant_achievement(user_id, "not_interested", bot)
-
     if (answer_streak or 0) >= 15:
         await grant_achievement(user_id, "answer_streak_15", bot)
-
     if (total_spent_stars or 0) > 100:
         await grant_achievement(user_id, "star_fall", bot)

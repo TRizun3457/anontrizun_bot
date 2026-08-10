@@ -23,14 +23,14 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 CAT_KAOMOJI_LIST = [
-    "( =ω= )",
-    "(ฅ^•ﻌ•^ฅ)",
-    "(=^･ω･^=)",
-    "(✿^ω^)",
-    "(≡^∇^≡)",
-    "(=^-ω-^=)",
-    "(๑ↀᴥↀ๑)",
-    "(ฅ'ω'ฅ)",
+    "( =ω= ) ",
+    "(ฅ^•ﻌ•^ฅ) ",
+    "(=^･ω･^=) ",
+    "(✿^ω^) ",
+    "(≡^∇^≡) ",
+    "(=^-ω-^=) ",
+    "(๑ↀᴥ๑) ",
+    "(ฅ'ω'ฅ) ",
 ]
 
 
@@ -64,16 +64,13 @@ async def anon_group_cmd(message: types.Message, bot_username: str) -> None:
 async def start_cmd(message: types.Message, command: CommandObject) -> None:
     if message.from_user is None or message.chat.type != "private":
         return
-
     referrer_id: int | None = None
     if command.args and command.args.startswith("ref_"):
         try:
             referrer_id = int(command.args.split("ref_")[1])
         except ValueError:
             pass
-
     await db.register_user(message.from_user.id, referrer_id)
-
     if message.from_user.id == ADMIN_ID:
         admin_text = (
             "👑 <b>Панель администратора</b>\n\n"
@@ -92,7 +89,6 @@ async def start_cmd(message: types.Message, command: CommandObject) -> None:
         )
         await message.answer(admin_text, parse_mode=ParseMode.HTML)
         return
-
     if await db.is_banned(message.from_user.id):
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -110,7 +106,6 @@ async def start_cmd(message: types.Message, command: CommandObject) -> None:
             parse_mode=ParseMode.HTML,
         )
         return
-
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -150,7 +145,6 @@ async def start_cmd(message: types.Message, command: CommandObject) -> None:
             ],
         ]
     )
-
     await message.answer(
         "Привет! Напиши сюда сообщение, и я передам его анонимно.",
         reply_markup=kb,
@@ -163,70 +157,63 @@ async def start_cmd(message: types.Message, command: CommandObject) -> None:
 async def show_status(event: types.Message | types.CallbackQuery) -> None:
     if event.from_user is None:
         return
-
     user_id = event.from_user.id
     user_stats = await db.register_user(user_id)
     banned = await db.is_banned(user_id)
-
     use_cats = user_stats.is_vip and user_stats.show_vip_cats
-    cat_header = random.choice(CAT_KAOMOJI_LIST) if use_cats else ""
-    cat_vip = random.choice(CAT_KAOMOJI_LIST) if use_cats else ""
-    cat_air = random.choice(CAT_KAOMOJI_LIST) if use_cats else ""
-
-    code_to_show = user_stats.anon_code
+    cat_header = f" {random.choice(CAT_KAOMOJI_LIST).strip()}" if use_cats else ""
+    cat_vip = f" {random.choice(CAT_KAOMOJI_LIST).strip()}" if use_cats else ""
+    cat_air = f" {random.choice(CAT_KAOMOJI_LIST).strip()}" if use_cats else ""
+    code_spoiler = f"<tg-spoiler><code>{user_stats.anon_code}</code></tg-spoiler>"
     status_text = "🚫 Заблокирован" if banned else "✅ Активен"
-    vip_status = (
-        f"💎 VIP Подписчик {cat_vip}".strip() if user_stats.is_vip else "❌ Нет"
-    )
-
+    vip_status = f"💎 VIP Подписчик{cat_vip}" if user_stats.is_vip else "❌ Нет"
     ach_count = await db.get_user_achievements_count(user_id)
     total_ach_count = len(db.ACHIEVEMENTS)
 
-    air_badge = (
-        f"\n└ <b>Оценка:</b> <i>Ну и воздухан... {cat_air}</i>".strip()
-        if user_stats.air_purchased > 0
-        else ""
+    ident_block = (
+        "🆔 <b>Идентификация</b>\n"
+        f"├ <b>Ваш код:</b> {code_spoiler}\n"
+        f"├ <b>ID:</b> <code>{user_id}</code>\n"
+        f"└ <b>Состояние:</b> {status_text}"
     )
+    stats_block = (
+        "📈 <b>Статистика сообщений</b>\n"
+        f"├ <b>Отправлено анонимок:</b> <code>{user_stats.sent_count}</code> ✉️\n"
+        f"├ <b>Получено ответов:</b> <code>{user_stats.received_count}</code> 💬\n"
+        f"└ <b>Оплачено приоритетных:</b> <code>{user_stats.priority_messages}</code> ⭐️"
+    )
+    ach_block = (
+        "🏆 <b>Достижения и Статусы</b>\n"
+        f"├ <b>Достижений:</b> <code>{ach_count}/{total_ach_count}</code> 🎖️\n"
+        f"└ <b>Куплено воздуха:</b> <code>{user_stats.air_purchased}</code> шт. 💨"
+    )
+    if user_stats.air_purchased > 0:
+        ach_block += f"\n└ <b>Оценка:</b> <i>Ну и воздухан...{cat_air}</i>"
 
     if user_stats.is_vip:
-        header = f"✨ 👑 <b>VIP-ПРОФИЛЬ {cat_header}</b> ✨".strip()
-        text = (
-            f"{header}\n"
-            f"⚡ <i>Премиум-статус активирован</i>\n\n"
-            f"🆔 <b>Идентификация</b>\n"
-            f"├ <b>Ваш код:</b> <code>{code_to_show}</code>\n"
-            f"├ <b>ID:</b> <code>{user_id}</code>\n"
-            f"└ <b>Состояние:</b> {status_text}\n\n"
-            f"💰 <b>Финансы и Статус</b>\n"
+        top_block = (
+            f"✨ 👑 <b>VIP-ПРОФИЛЬ{cat_header}</b> 👑 ✨\n"
+            "⚡️ <i>Премиум-статус активирован</i>"
+        )
+        finance_block = (
+            "💰 <b>Финансы и Статус</b>\n"
             f"├ <b>Баланс:</b> <b>{user_stats.balance}</b> ⭐️\n"
-            f"└ <b>VIP Поддержка:</b> {vip_status}\n\n"
-            f"📈 <b>Статистика сообщений</b>\n"
-            f"├ <b>Отправлено анонимок:</b> <code>{user_stats.sent_count}</code> ✉️\n"
-            f"├ <b>Получено ответов:</b> <code>{user_stats.received_count}</code> 💬\n"
-            f"└ <b>Оплачено приоритетных:</b> <code>{user_stats.priority_messages}</code> ⭐\n\n"
-            f"🏆 <b>Достижения и Статусы</b>\n"
-            f"├ <b>Достижений:</b> <code>{ach_count}/{total_ach_count}</code> 🎖️\n"
-            f"└ <b>Куплено воздуха:</b> <code>{user_stats.air_purchased}</code> шт. 💨{air_badge}"
+            f"└ <b>VIP Поддержка:</b> {vip_status}"
         )
     else:
-        text = (
-            f"👤 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b>\n"
-            f"─────────────────────\n\n"
-            f"🆔 <b>Идентификация</b>\n"
-            f"├ <b>Ваш код:</b> <code>{code_to_show}</code>\n"
-            f"├ <b>ID:</b> <code>{user_id}</code>\n"
-            f"└ <b>Состояние:</b> {status_text}\n\n"
-            f"💰 <b>Финансы</b>\n"
+        top_block = "👤 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b>\n─────────────────────"
+        finance_block = (
+            "💰 <b>Финансы</b>\n"
             f"├ <b>Баланс:</b> <b>{user_stats.balance}</b> ⭐️\n"
-            f"└ <b>VIP Поддержка:</b> {vip_status}\n\n"
-            f"📈 <b>Статистика сообщений</b>\n"
-            f"├ <b>Отправлено анонимок:</b> <code>{user_stats.sent_count}</code> ✉️\n"
-            f"├ <b>Получено ответов:</b> <code>{user_stats.received_count}</code> 💬\n"
-            f"└ <b>Оплачено приоритетных:</b> <code>{user_stats.priority_messages}</code> ⭐\n\n"
-            f"🏆 <b>Достижения и Статусы</b>\n"
-            f"├ <b>Достижений:</b> <code>{ach_count}/{total_ach_count}</code> 🎖️\n"
-            f"└ <b>Куплено воздуха:</b> <code>{user_stats.air_purchased}</code> шт. 💨{air_badge}"
+            f"└ <b>VIP Поддержка:</b> {vip_status}"
         )
+    text = (
+        f"{top_block}\n\n"
+        f"{ident_block}\n\n"
+        f"{finance_block}\n\n"
+        f"{stats_block}\n\n"
+        f"{ach_block}"
+    )
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -267,7 +254,6 @@ async def show_status(event: types.Message | types.CallbackQuery) -> None:
             ],
         ]
     )
-
     if isinstance(event, types.CallbackQuery):
         if isinstance(event.message, types.Message):
             await event.message.edit_text(
@@ -283,35 +269,25 @@ async def show_status(event: types.Message | types.CallbackQuery) -> None:
 async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None:
     if event.from_user is None:
         return
-
     user_id = event.from_user.id
     user_stats = await db.get_user_stats(user_id)
-
     refresh_map = {
         "never": "Никогда",
+        "8h": "Раз в 8 ч.",
         "daily": "Раз в 24 ч.",
         "weekly": "Раз в 7 дней",
     }
-    share_map = {
-        "full": "Полная информация",
-        "code_only": "Только код",
-        "stats_only": "Только статистика",
-    }
-
     refresh_str = refresh_map.get(user_stats.code_auto_refresh, "Никогда")
-    share_str = share_map.get(user_stats.inline_share_mode, "Полная информация")
     cats_str = "Включены ✅" if user_stats.show_vip_cats else "Выключены ❌"
-
+    code_spoiler = f"<tg-spoiler><code>{user_stats.anon_code}</code></tg-spoiler>"
     text = (
-        f"⚙️ <b>НАСТРОЙКИ ПРОФИЛЯ</b>\n"
-        f"─────────────────────\n\n"
-        f"🔑 <b>Ваш анонимный код:</b> <code>{user_stats.anon_code}</code>\n\n"
+        "⚙️ <b>НАСТРОЙКИ ПРОФИЛЯ</b>\n"
+        "─────────────────────\n\n"
+        f"🔑 <b>Ваш анонимный код:</b> {code_spoiler}\n\n"
         f"• <b>Авто-обновление кода:</b> {refresh_str}\n"
-        f"• <b>Кастомизация котиков (VIP):</b> {cats_str}\n"
-        f"• <b>Режим шеринга в чатах:</b> {share_str}\n\n"
-        f"<i>Выберите параметр для изменения ниже:</i>"
+        f"• <b>Кастомизация котиков (VIP):</b> {cats_str}\n\n"
+        "<i>Выберите параметр для изменения ниже:</i>"
     )
-
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -334,14 +310,13 @@ async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None
             ],
             [
                 InlineKeyboardButton(
-                    text=f"📲 Инлайн шеринг: {share_str}",
-                    callback_data="settings_toggle_share",
+                    text="📲 Настройки шеринга",
+                    callback_data="settings_share_menu",
                 )
             ],
             [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="my_status")],
         ]
     )
-
     if isinstance(event, types.CallbackQuery):
         if isinstance(event.message, types.Message):
             await event.message.edit_text(
@@ -356,10 +331,8 @@ async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None
 async def handle_refresh_code_manual(callback: types.CallbackQuery) -> None:
     if callback.from_user is None:
         return
-
     user_id = callback.from_user.id
     success, result = await db.regenerate_user_code(user_id)
-
     if success:
         await callback.answer(
             f"✅ Ваш код успешно обновлен на: {result}", show_alert=True
@@ -373,11 +346,9 @@ async def handle_refresh_code_manual(callback: types.CallbackQuery) -> None:
 async def handle_toggle_autorefresh(callback: types.CallbackQuery) -> None:
     if callback.from_user is None:
         return
-
     user_stats = await db.get_user_stats(callback.from_user.id)
-    cycle = {"never": "daily", "daily": "weekly", "weekly": "never"}
+    cycle = {"never": "8h", "8h": "daily", "daily": "weekly", "weekly": "never"}
     new_val = cycle.get(user_stats.code_auto_refresh, "never")
-
     await db.update_user_setting(callback.from_user.id, "code_auto_refresh", new_val)
     await callback.answer("⏱ Интервал авто-смены кода изменен.")
     await show_settings_menu(callback)
@@ -387,39 +358,172 @@ async def handle_toggle_autorefresh(callback: types.CallbackQuery) -> None:
 async def handle_toggle_cats(callback: types.CallbackQuery) -> None:
     if callback.from_user is None:
         return
-
     user_stats = await db.get_user_stats(callback.from_user.id)
     new_val = 0 if user_stats.show_vip_cats else 1
-
     await db.update_user_setting(callback.from_user.id, "show_vip_cats", new_val)
     status_text = "включены" if new_val == 1 else "выключены"
     await callback.answer(f"🐱 Котики в оформлении {status_text}.")
     await show_settings_menu(callback)
 
 
-@router.callback_query(F.data == "settings_toggle_share")
-async def handle_toggle_share(callback: types.CallbackQuery) -> None:
-    if callback.from_user is None:
+VIS_FIELD_MAP = {
+    "sent": "show_sent",
+    "received": "show_received",
+    "priority": "show_priority",
+    "air": "show_air",
+    "achievements": "show_achievements",
+}
+
+
+async def toggle_visibility_field(user_id: int, field_name: str) -> bool:
+    user_stats = await db.get_user_stats(user_id)
+    active_count = sum(
+        1
+        for val in (
+            user_stats.show_sent,
+            user_stats.show_received,
+            user_stats.show_priority,
+            user_stats.show_air,
+            user_stats.show_achievements,
+        )
+        if val
+    )
+    current_val = getattr(user_stats, field_name)
+    if current_val and active_count <= 1:
+        return False
+    await db.update_user_setting(user_id, field_name, 0 if current_val else 1)
+    return True
+
+
+def get_share_preview_text(
+    user_stats: db.UserStats, ach_count: int, total_ach: int
+) -> str:
+    use_cats = user_stats.is_vip and user_stats.show_vip_cats
+    cat_inline = f" {random.choice(CAT_KAOMOJI_LIST).strip()}" if use_cats else ""
+    stats_items = []
+    if user_stats.show_sent:
+        stats_items.append(f"✉️ Отправлено анонимок: <b>{user_stats.sent_count}</b>")
+    if user_stats.show_received:
+        stats_items.append(f"💬 Получено ответов: <b>{user_stats.received_count}</b>")
+    if user_stats.show_priority:
+        stats_items.append(f"⭐ Приоритетных: <b>{user_stats.priority_messages}</b>")
+    if user_stats.show_air:
+        stats_items.append(f"💨 Воздуха куплено: <b>{user_stats.air_purchased}</b>")
+    if user_stats.show_achievements:
+        stats_items.append(f"🏆 Достижений: <b>{ach_count}/{total_ach}</b>")
+    stats_body = "\n".join(stats_items)
+    if user_stats.is_vip:
+        header_vip = f"✨ 👑 <b>VIP-ПРОФИЛЬ{cat_inline}</b> 👑 ✨"
+        return (
+            f"{header_vip}\n"
+            "💎 <b>Статус:</b> VIP Подписчик\n\n"
+            "📊 <b>Статистика:</b>\n"
+            f"{stats_body}"
+        )
+    return f"📊 <b>Анонимная статистика:</b>\n{stats_body}"
+
+
+@router.message(Command("share_settings"))
+@router.callback_query(F.data == "settings_share_menu")
+async def show_share_settings_menu(event: types.Message | types.CallbackQuery) -> None:
+    if event.from_user is None:
         return
+    user_id = event.from_user.id
+    user_stats = await db.get_user_stats(user_id)
+    ach_count = await db.get_user_achievements_count(user_id)
+    total_ach = len(db.ACHIEVEMENTS)
+    preview_text = get_share_preview_text(user_stats, ach_count, total_ach)
+    vis_sent = "✅" if user_stats.show_sent else "❌"
+    vis_received = "✅" if user_stats.show_received else "❌"
+    vis_priority = "✅" if user_stats.show_priority else "❌"
+    vis_air = "✅" if user_stats.show_air else "❌"
+    vis_ach = "✅" if user_stats.show_achievements else "❌"
+    text = (
+        "📲 <b>НАСТРОЙКИ ИНЛАЙН-ШЕРИНГА</b>\n"
+        "─────────────────────\n"
+        "🔒 <i>Конфиденциальность: Ваш анонимный код и Telegram ID <b>никогда не публикуются</b> при шеринге.</i>\n\n"
+        "👁️ <b>Предпросмотр сообщения (как его увидят в чате):</b>\n\n"
+        f"{preview_text}\n\n"
+        "─────────────────────\n"
+        "⚠️ <i>Хотя бы один параметр всегда должен быть включён.</i>\n"
+        "<i>Отметьте, что показывать в карточке:</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"✉️ Анонимки: {vis_sent}",
+                    callback_data="toggle_share_vis_sent",
+                ),
+                InlineKeyboardButton(
+                    text=f"💬 Ответы: {vis_received}",
+                    callback_data="toggle_share_vis_received",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"⭐ Приоритеты: {vis_priority}",
+                    callback_data="toggle_share_vis_priority",
+                ),
+                InlineKeyboardButton(
+                    text=f"💨 Воздух: {vis_air}",
+                    callback_data="toggle_share_vis_air",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🏆 Достижения: {vis_ach}",
+                    callback_data="toggle_share_vis_achievements",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚀 Проверить и поделиться в чате", switch_inline_query=""
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад в настройки", callback_data="settings_menu"
+                )
+            ],
+        ]
+    )
+    if isinstance(event, types.CallbackQuery):
+        if isinstance(event.message, types.Message):
+            await event.message.edit_text(
+                text, reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+        await event.answer()
+    else:
+        await event.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-    user_stats = await db.get_user_stats(callback.from_user.id)
-    cycle = {"full": "code_only", "code_only": "stats_only", "stats_only": "full"}
-    new_val = cycle.get(user_stats.inline_share_mode, "full")
 
-    await db.update_user_setting(callback.from_user.id, "inline_share_mode", new_val)
-    await callback.answer("📲 Вид отображения при шеринге изменен.")
-    await show_settings_menu(callback)
+@router.callback_query(F.data.startswith("toggle_share_vis_"))
+async def handle_toggle_share_visibility(callback: types.CallbackQuery) -> None:
+    if callback.from_user is None or callback.data is None:
+        return
+    target = callback.data.replace("toggle_share_vis_", "")
+    if target not in VIS_FIELD_MAP:
+        await callback.answer("❌ Ошибка выбора параметра.", show_alert=True)
+        return
+    ok = await toggle_visibility_field(callback.from_user.id, VIS_FIELD_MAP[target])
+    if not ok:
+        await callback.answer(
+            "❌ Нельзя скрыть все элементы! В карточке должен быть виден хотя бы один показатель.",
+            show_alert=True,
+        )
+        return
+    await callback.answer("✅ Видимость показателя изменена.")
+    await show_share_settings_menu(callback)
 
 
 @router.callback_query(F.data == "my_achievements")
 async def show_achievements(callback: types.CallbackQuery) -> None:
     if callback.from_user is None:
         return
-
     user_id = callback.from_user.id
     unlocked_ids = await db.get_user_achievements(user_id)
     total_ach_count = len(db.ACHIEVEMENTS)
-
     if not unlocked_ids:
         text = "🏆 <b>Ваши достижения</b>\n\nУ вас пока нет открытых достижений."
     else:
@@ -428,13 +532,11 @@ async def show_achievements(callback: types.CallbackQuery) -> None:
             ach = db.ACHIEVEMENTS.get(ach_id)
             if ach:
                 text += f"{ach['icon']} <b>{ach['title']}</b>\n<i>{ach['description']}</i>\n\n"
-
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад в статус", callback_data="my_status")]
         ]
     )
-
     if isinstance(callback.message, types.Message):
         await callback.message.edit_text(
             text, reply_markup=kb, parse_mode=ParseMode.HTML
@@ -447,7 +549,6 @@ async def handle_reactions(reaction: types.MessageReactionUpdated, bot: Bot) -> 
     msg_id = reaction.message_id
     chat_id = reaction.chat.id
     new_reaction = reaction.new_reaction
-
     if chat_id == ADMIN_ID:
         res = await db.get_sender_with_message_by_admin_msg(msg_id)
         if res:
@@ -477,7 +578,6 @@ async def inline_query_handler(
     user_id = inline_query.from_user.id
     user_stats = await db.register_user(user_id)
     results: list[InlineQueryResult] = []
-
     if user_id == ADMIN_ID:
         share_text = "✉️ <b>Задай мне анонимный вопрос!</b>\n\nНапиши всё, что думаешь — всё передастся анонимно!"
         kb = InlineKeyboardMarkup(
@@ -500,53 +600,14 @@ async def inline_query_handler(
                 reply_markup=kb,
             )
         )
-
     ach_count = await db.get_user_achievements_count(user_id)
     total_ach_count = len(db.ACHIEVEMENTS)
-
-    use_cats = user_stats.is_vip and user_stats.show_vip_cats
-    cat_inline = random.choice(CAT_KAOMOJI_LIST) if use_cats else ""
-
-    share_mode = user_stats.inline_share_mode
-
-    if share_mode == "code_only":
-        stats_text = (
-            f"🔑 <b>Мой анонимный код:</b> <code>{user_stats.anon_code}</code>\n"
-            f"✉️ Напиши мне анонимное сообщение в боте!"
-        )
-        share_title = "🔑 Поделиться только кодом"
-    elif share_mode == "stats_only":
-        stats_text = (
-            f"📊 <b>Моя статистика:</b>\n"
-            f"💨 Воздуха: <b>{user_stats.air_purchased}</b>\n"
-            f"⭐ Приоритетов: <b>{user_stats.priority_messages}</b>\n"
-            f"🏆 Достижений: <b>{ach_count}/{total_ach_count}</b>"
-        )
-        share_title = "📊 Поделиться статистикой"
-    else:
-        if user_stats.is_vip:
-            header_vip = f"✨ 👑 <b>VIP-ПРОФИЛЬ {cat_inline}</b> ✨".strip()
-            stats_text = (
-                f"{header_vip}\n"
-                f"🔑 <b>Код:</b> <code>{user_stats.anon_code}</code>\n"
-                f"💎 <b>Статус:</b> VIP Подписчик\n\n"
-                f"📊 <b>Статистика:</b>\n"
-                f"💨 <b>Воздуха:</b> <b>{user_stats.air_purchased}</b>\n"
-                f"⭐ <b>Приоритетов:</b> <b>{user_stats.priority_messages}</b>\n"
-                f"🏆 <b>Достижений:</b> <b>{ach_count}/{total_ach_count}</b>"
-            )
-            share_title = f"👑 Поделиться VIP статусом {cat_inline}".strip()
-        else:
-            stats_text = (
-                f"👤 <b>Профиль анонима:</b>\n"
-                f"🔑 <b>Код:</b> <code>{user_stats.anon_code}</code>\n\n"
-                f"📊 <b>Статистика:</b>\n"
-                f"💨 Воздуха: <b>{user_stats.air_purchased}</b>\n"
-                f"⭐ Приоритетов: <b>{user_stats.priority_messages}</b>\n"
-                f"🏆 Достижений: <b>{ach_count}/{total_ach_count}</b>"
-            )
-            share_title = "📊 Поделиться статусом"
-
+    stats_text = get_share_preview_text(user_stats, ach_count, total_ach_count)
+    share_title = (
+        "👑 Поделиться VIP профилем"
+        if user_stats.is_vip
+        else "📊 Поделиться статистикой"
+    )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -567,7 +628,6 @@ async def inline_query_handler(
             reply_markup=kb,
         )
     )
-
     await inline_query.answer(cast(list, results), cache_time=1)
 
 
@@ -576,7 +636,6 @@ async def handle_reply_button(callback: types.CallbackQuery, state: FSMContext) 
     if callback.data is None or not isinstance(callback.message, types.Message):
         await callback.answer("Ошибка вызова кнопки.", show_alert=True)
         return
-
     sender_id = int(callback.data.split("_")[1])
     await state.update_data(reply_to_user_id=sender_id)
     await state.set_state(ReplyState.waiting_for_reply)
@@ -591,13 +650,11 @@ async def send_reply_to_user(
     data = await state.get_data()
     sender_id = data.get("reply_to_user_id")
     await state.clear()
-
     if not sender_id:
         await message.answer(
             "❌ Ошибка: не удалось найти получателя.", parse_mode=ParseMode.HTML
         )
         return
-
     try:
         await bot.send_message(
             chat_id=sender_id,
@@ -605,11 +662,9 @@ async def send_reply_to_user(
             parse_mode=ParseMode.HTML,
         )
         await message.copy_to(chat_id=sender_id)
-
         await db.increment_received_count(sender_id)
         await db.increment_answer_streak(sender_id)
         await db.check_and_grant_achievements(sender_id, bot)
-
         await message.answer("✅ Ответ успешно отправлен!", parse_mode=ParseMode.HTML)
     except TelegramAPIError:
         logger.exception("Error sending reply to user %s", sender_id)
@@ -622,7 +677,6 @@ async def send_reply_to_user(
 async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
     if message.chat.type != "private" or message.from_user is None:
         return
-
     if (
         message.refunded_payment
         or message.successful_payment
@@ -638,13 +692,10 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
         )
     ):
         return
-
     user_id = message.from_user.id
     if user_id == ADMIN_ID:
         return
-
     user_stats = await db.register_user(user_id)
-
     if await db.is_banned(user_id):
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -660,26 +711,19 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
             "❌ Вы заблокированы в боте.", reply_markup=kb, parse_mode=ParseMode.HTML
         )
         return
-
     try:
         user_stats = await db.get_user_stats(user_id)
         is_priority = user_stats.priority_messages > 0
-
         if is_priority:
             await db.waste_priority_message(user_id)
             await db.increment_priority_sent_count(user_id)
-
         await db.increment_sent_count(user_id)
-
-        # Trigger words check
         msg_text = (message.text or message.caption or "").lower()
         if "42" in msg_text:
             await db.grant_achievement(user_id, "bro_42", bot)
         if "67" in msg_text:
             await db.grant_achievement(user_id, "degrade_67", bot)
-
         await db.check_and_grant_achievements(user_id, bot)
-
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -689,7 +733,6 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
                 ]
             ]
         )
-
         if user_stats.is_vip:
             vip_banner = (
                 "═════════════════════\n💎 <b>VIP-СООБЩЕНИЕ</b>\n═════════════════════"
@@ -697,16 +740,13 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
             await bot.send_message(
                 chat_id=ADMIN_ID, text=vip_banner, parse_mode=ParseMode.HTML
             )
-
         if is_priority:
             await bot.send_message(
                 chat_id=ADMIN_ID,
                 text="🌟 <b>[ПРИОРИТЕТНОЕ СООБЩЕНИЕ]</b>",
                 parse_mode=ParseMode.HTML,
             )
-
         sent_msg = await message.copy_to(chat_id=ADMIN_ID, reply_markup=keyboard)
-
         await db.add_message(
             sent_msg.message_id,
             user_id,
@@ -714,14 +754,12 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
             is_priority,
             message.message_id,
         )
-
         confirm_text = (
             "⭐ <b>Приоритетное сообщение отправлено!</b>"
             if is_priority
             else "🚀 Сообщение отправлено анонимно!"
         )
         await message.answer(confirm_text, parse_mode=ParseMode.HTML)
-
     except TelegramAPIError:
         logger.exception(f"Forward error from {user_id}")
         await message.answer("❌ Ошибка при отправке.", parse_mode=ParseMode.HTML)
