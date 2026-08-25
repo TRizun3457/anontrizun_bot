@@ -1,0 +1,17 @@
+[package]
+name = "database"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "database"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3-async-runtimes = { version = "0.22", features = ["tokio-runtime"] }
+tokio = { version = "1.40", features = ["full"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+rand = "0.8"
+dashmap = "6.1"
+once_cell = "1.20"

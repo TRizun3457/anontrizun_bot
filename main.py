@@ -14,19 +14,23 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
-    await db.init_db()
+    await db.init_db("bot_data.db")
     bot = Bot(token=BOT_TOKEN, session=RetrySession(timeout=60))
     dp = Dispatcher()
+
     dp.update.outer_middleware(ErrorGuardMiddleware())
     dp.message.middleware(ThrottlingMiddleware(limit=1.2))
+
     dp.include_routers(
         user.router,
         admin.router,
         payments.router,
     )
+
     bot_username = (await bot.get_me()).username
     if bot_username is None:
         raise RuntimeError("bot username is None")
+
     logger.info("🚀 Бот запущен...")
     await dp.start_polling(
         bot,
@@ -35,8 +39,6 @@ async def main() -> None:
         polling_timeout=60,
         bot_username=bot_username,
     )
-    if db._db_conn:
-        await db._db_conn.close()
     logger.info("🛑 Бот успешно остановлен.")
 
 

@@ -1,7 +1,6 @@
 .venv/
 venv/
 env/
-
 .env
 *.env
 !.env.example
@@ -14,13 +13,19 @@ env/
 *.sqlite3
 
 __pycache__/
-pycache/
 *.py[cod]
-*.pyo
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.uv/
 
+**/target/
+**/*.so
+**/*.pyd
+**/*.dylib
+
+.zed/
 .vscode/
 .idea/
 

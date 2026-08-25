@@ -28,34 +28,26 @@ async def pay_with_balance_or_invoice(
     user_id: int, price: int, item_type: str, callback: types.CallbackQuery, bot: Bot
 ) -> None:
     user_stats = await db.get_user_stats(user_id)
-
     if user_stats.balance >= price:
         await db.take_balance(price, user_id)
         await db.increment_total_spent_stars(user_id, price)
-        await db.grant_achievement(user_id, "first_donate", bot)
-
+        await db.grant_achievement(user_id, "first_donate")
         reply_text: str | None = None
-
         if item_type == "priority":
             await db.increment_priority_messages(user_id)
             reply_text = "🎉 <b>Оплачено с баланса!</b> Начислен 1 приоритетный ответ."
-
         elif item_type == "vip":
-            await db.set_vip(user_id)
+            await db.set_vip(user_id, True)
             reply_text = "💎 <b>Оплачено с баланса!</b> Активировано VIP-оформление."
-
         elif item_type == "air":
             await db.increment_air_purchased(user_id)
             reply_text = "💨 <b>Оплачено с баланса!</b> Вы приобрели воздух."
-
-        await db.check_and_grant_achievements(user_id, bot)
-
+        await db.check_and_grant_achievements(user_id)
         if isinstance(callback.message, types.Message) and reply_text:
             await callback.message.answer(
                 reply_text,
                 parse_mode=ParseMode.HTML,
             )
-
         await callback.answer()
     else:
         title_map = {
@@ -84,7 +76,7 @@ async def deposit_menu_handler(callback: types.CallbackQuery) -> None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="10 ⭐️", callback_data="dep_10"),
-                InlineKeyboardButton(text="50 ⭐️", callback_data="dep_50"),
+                InlineKeyboardButton(text="50 ️⭐️", callback_data="dep_50"),
                 InlineKeyboardButton(text="100 ⭐️", callback_data="dep_100"),
             ],
             [
@@ -111,7 +103,7 @@ async def send_deposit_invoice(callback: types.CallbackQuery, bot: Bot) -> None:
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=f"💳 Пополнение баланса на {amount} Stars",
-        description=f"Пополнение внутреннего баланса бота на {amount} ⭐️",
+        description=f"Пополнение внутреннего баланса бота на {amount} ️",
         payload=f"deposit_{amount}",
         currency="XTR",
         prices=[LabeledPrice(label=f"Пополнение {amount} Stars", amount=amount)],
@@ -123,7 +115,6 @@ async def send_deposit_invoice(callback: types.CallbackQuery, bot: Bot) -> None:
 async def handle_buy_priority(callback: types.CallbackQuery, bot: Bot) -> None:
     user_id = callback.from_user.id
     user_stats = await db.get_user_stats(user_id)
-
     if user_stats.balance >= 1:
         await pay_with_balance_or_invoice(user_id, 1, "priority", callback, bot)
     else:
@@ -163,7 +154,6 @@ async def handle_buy_apology(
 ) -> None:
     user_id = callback.from_user.id
     user_stats = await db.get_user_stats(user_id)
-
     if user_stats.balance >= 50:
         await state.set_state(ApologyState.waiting_for_text)
         await state.update_data(paid_by_balance=True)
@@ -196,42 +186,33 @@ async def process_successful_payment(
 ) -> None:
     if not message.from_user or not message.successful_payment:
         return
-
     user_id = message.from_user.id
     payment = message.successful_payment
     charge_id = payment.telegram_payment_charge_id
     payload = payment.invoice_payload
     stars_amount = payment.total_amount
-
     await db.register_user(user_id)
     await db.create_payment(charge_id, user_id, payload)
     await db.increment_total_spent_stars(user_id, stars_amount)
-    await db.grant_achievement(user_id, "first_donate", bot)
-
+    await db.grant_achievement(user_id, "first_donate")
     reply_text: str | None = None
-
     if payload.startswith("deposit_"):
         amount = int(payload.split("_")[1])
         await db.give_balance(amount, user_id)
         reply_text = f"🎉 <b>Баланс пополнен на {amount} Stars!</b>"
-
     elif payload == "buy_vip_sub":
-        await db.set_vip(user_id)
+        await db.set_vip(user_id, True)
         reply_text = (
             "💎 <b>Огромное спасибо за поддержку!</b> Активировано VIP-оформление."
         )
-
     elif payload == "buy_air_pack":
         await db.increment_air_purchased(user_id)
         reply_text = "💨 <b>Спасибо за покупку воздуха!</b>"
-
     elif payload == "buy_apology_req":
         await state.set_state(ApologyState.waiting_for_text)
         await state.update_data(paid_by_balance=False)
         reply_text = "✍️ <b>Оплата получена!</b> Введите текст раскаяния:"
-
-    await db.check_and_grant_achievements(user_id, bot)
-
+    await db.check_and_grant_achievements(user_id)
     if reply_text:
         await message.answer(reply_text, parse_mode=ParseMode.HTML)
 
@@ -242,29 +223,22 @@ async def process_apology_text(
 ) -> None:
     if not message.from_user or not message.text:
         return
-
     user_id = message.from_user.id
     data = await state.get_data()
     paid_by_balance = data.get("paid_by_balance", False)
-
     if not isinstance(paid_by_balance, bool):
         msg = f"paid_by_balance in state is {type(paid_by_balance)}, expected bool"
         raise TypeError(msg)
-
     if paid_by_balance:
         await db.take_balance(50, user_id)
-
     await state.clear()
-
     anon_code = await db.get_banned_anon_code_by_user_id(user_id)
-
     apology_text = (
         f"🙏 <b>ЗАЯВКА НА РАЗБАН (ОПЛАЧЕНО 50 ⭐️)</b>\n\n"
         f"• <b>Код забаненного:</b> <code>{anon_code}</code>\n"
         f"• <b>User ID:</b> <code>{user_id}</code>\n\n"
         f"<b>Сообщение с раскаянием:</b>\n<i>{message.text}</i>"
     )
-
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -274,12 +248,11 @@ async def process_apology_text(
             ],
             [
                 InlineKeyboardButton(
-                    text="❌ Отклонить", callback_data=f"decline_unban_{user_id}"
+                    text=" Отклонить", callback_data=f"decline_unban_{user_id}"
                 )
             ],
         ]
     )
-
     await bot.send_message(
         chat_id=ADMIN_ID,
         text=apology_text,
@@ -295,7 +268,6 @@ async def process_apology_text(
 async def refund_user_payments(message: types.Message, bot: Bot) -> None:
     if not message.from_user or message.from_user.id != ADMIN_ID or not message.text:
         return
-
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer(
@@ -303,15 +275,12 @@ async def refund_user_payments(message: types.Message, bot: Bot) -> None:
             parse_mode=ParseMode.HTML,
         )
         return
-
     input_param = args[1].strip()
-
     if input_param.startswith("stx"):
         charge_id = input_param
         refund_user_id = (
             await db.get_payment_user_id_by_charge_id(charge_id)
         ) or ADMIN_ID
-
         try:
             await bot.refund_star_payment(
                 user_id=refund_user_id, telegram_payment_charge_id=charge_id
@@ -327,7 +296,6 @@ async def refund_user_payments(message: types.Message, bot: Bot) -> None:
                 parse_mode=ParseMode.HTML,
             )
         return
-
     try:
         target_user_id = int(input_param)
     except ValueError:
@@ -336,15 +304,12 @@ async def refund_user_payments(message: types.Message, bot: Bot) -> None:
             parse_mode=ParseMode.HTML,
         )
         return
-
     charge_ids = await db.get_success_charge_ids_by_user_id(target_user_id)
-
     if not charge_ids:
         await message.answer(
             "❌ Нет успешных платежей для возврата.", parse_mode=ParseMode.HTML
         )
         return
-
     refunded_ids: list[str] = []
     for charge_id in charge_ids:
         try:
@@ -354,9 +319,7 @@ async def refund_user_payments(message: types.Message, bot: Bot) -> None:
             refunded_ids.append(charge_id)
         except TelegramAPIError:
             logger.exception("error while refunding star payments")
-
     await db.batch_set_payment_status_by_charge_ids(refunded_ids, "refunded")
-
     await message.answer(
         f"✅ Успешно возвращено транзакций: <b>{len(refunded_ids)}</b>",
         parse_mode=ParseMode.HTML,
