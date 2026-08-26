@@ -814,8 +814,8 @@ fn create_payment(
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let state = get_state().await?;
-        sqlx::query(
-            "INSERT INTO payments (charge_id, user_id, payload, status) VALUES (?, ?, ?, 'success')"
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO payments (charge_id, user_id, payload, status) VALUES (?, ?, ?, 'success')"
         )
         .bind(charge_id)
         .bind(user_id)
@@ -823,7 +823,8 @@ fn create_payment(
         .execute(&state.pool)
         .await
         .map_err(db_err)?;
-        Ok(())
+
+        Ok(result.rows_affected() > 0)
     })
 }
 

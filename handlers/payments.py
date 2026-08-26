@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from logging import getLogger
 
 from aiogram import Bot, F, Router, types
@@ -76,7 +77,7 @@ async def deposit_menu_handler(callback: types.CallbackQuery) -> None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="10 ⭐️", callback_data="dep_10"),
-                InlineKeyboardButton(text="50 ️⭐️", callback_data="dep_50"),
+                InlineKeyboardButton(text="50 ⭐️", callback_data="dep_50"),
                 InlineKeyboardButton(text="100 ⭐️", callback_data="dep_100"),
             ],
             [
@@ -103,7 +104,7 @@ async def send_deposit_invoice(callback: types.CallbackQuery, bot: Bot) -> None:
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=f"💳 Пополнение баланса на {amount} Stars",
-        description=f"Пополнение внутреннего баланса бота на {amount} ️",
+        description=f"Пополнение внутреннего баланса бота на {amount} ⭐️",
         payload=f"deposit_{amount}",
         currency="XTR",
         prices=[LabeledPrice(label=f"Пополнение {amount} Stars", amount=amount)],
@@ -192,7 +193,9 @@ async def process_successful_payment(
     payload = payment.invoice_payload
     stars_amount = payment.total_amount
     await db.register_user(user_id)
-    await db.create_payment(charge_id, user_id, payload)
+    is_created = await db.create_payment(charge_id, user_id, payload)
+    if not is_created:
+        return
     await db.increment_total_spent_stars(user_id, stars_amount)
     await db.grant_achievement(user_id, "first_donate")
     reply_text: str | None = None
@@ -227,7 +230,7 @@ async def process_apology_text(
     data = await state.get_data()
     paid_by_balance = data.get("paid_by_balance", False)
     if not isinstance(paid_by_balance, bool):
-        msg = f"paid_by_balance in state is {type(paid_by_balance)}, expected bool"
+        msg = f"значение paid_by_balance в state имеет тип {type(paid_by_balance)}, ожидался bool"
         raise TypeError(msg)
     if paid_by_balance:
         await db.take_balance(50, user_id)
@@ -248,7 +251,7 @@ async def process_apology_text(
             ],
             [
                 InlineKeyboardButton(
-                    text=" Отклонить", callback_data=f"decline_unban_{user_id}"
+                    text="❌ Отклонить", callback_data=f"decline_unban_{user_id}"
                 )
             ],
         ]
@@ -264,38 +267,136 @@ async def process_apology_text(
     )
 
 
+async def find_star_transactions_by_id(
+    bot: Bot, charge_id: str
+) -> list[types.StarTransaction]:
+    transactions: list[types.StarTransaction] = []
+    offset = 0
+
+    while True:
+        result = await bot.get_star_transactions(offset=offset, limit=100)
+        batch = result.transactions
+
+        if not batch:
+            break
+
+        for transaction in batch:
+            if transaction.id == charge_id:
+                transactions.append(transaction)
+
+        if len(batch) < 100:
+            break
+
+        offset += len(batch)
+
+    return transactions
+
+
 @router.message(Command("refund"))
 async def refund_user_payments(message: types.Message, bot: Bot) -> None:
     if not message.from_user or message.from_user.id != ADMIN_ID or not message.text:
         return
+
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer(
-            "⚠️ Пример:\n<code>/refund USER_ID</code> или <code>/refund stx9B9...</code>",
+            "⚠️ Пример:\n<code>/refund USER_ID</code> или "
+            "<code>/refund stx9B9...</code>",
             parse_mode=ParseMode.HTML,
         )
         return
+
     input_param = args[1].strip()
+
     if input_param.startswith("stx"):
         charge_id = input_param
-        refund_user_id = (
-            await db.get_payment_user_id_by_charge_id(charge_id)
-        ) or ADMIN_ID
+
+        try:
+            transactions = await find_star_transactions_by_id(bot, charge_id)
+        except TelegramAPIError as err:
+            logger.exception("не удалось получить транзакции Telegram Star")
+            await message.answer(
+                f"❌ Не удалось получить транзакции из Telegram: <code>{err!r}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        if not transactions:
+            await message.answer(
+                f"❌ Транзакция <code>{charge_id}</code> не найдена в Telegram.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        already_refunded = any(transaction.amount < 0 for transaction in transactions)
+        if already_refunded:
+            await message.answer(
+                f"ℹ️ Транзакция <code>{charge_id}</code> уже была возвращена.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        original = next(
+            (transaction for transaction in transactions if transaction.amount > 0),
+            None,
+        )
+        if original is None:
+            await message.answer(
+                f"❌ Не удалось найти исходный платёж <code>{charge_id}</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        payment_date = (
+            original.date.replace(tzinfo=UTC)
+            if original.date.tzinfo is None
+            else original.date
+        )
+        now = datetime.now(UTC)
+        refund_deadline = payment_date + timedelta(days=14)
+
+        if now > refund_deadline:
+            await message.answer(
+                f"⏰ Возврат <code>{charge_id}</code> невозможен: "
+                f"платежу больше 14 дней.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        source = original.source
+        refund_user = getattr(source, "user", None)
+        refund_user_id = getattr(refund_user, "id", None)
+
+        if refund_user_id is None:
+            await message.answer(
+                f"❌ Не удалось определить пользователя платежа "
+                f"<code>{charge_id}</code> через Telegram.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
         try:
             await bot.refund_star_payment(
-                user_id=refund_user_id, telegram_payment_charge_id=charge_id
-            )
-            await db.set_payment_status_by_charge_id(charge_id, "refunded")
-            await message.answer(
-                f"✅ Успешный возврат по операции: <code>{charge_id}</code>",
-                parse_mode=ParseMode.HTML,
+                user_id=refund_user_id,
+                telegram_payment_charge_id=charge_id,
             )
         except TelegramAPIError as err:
+            logger.exception("ошибка при возврате платежа Star")
             await message.answer(
-                f"❌ Ошибка при возврате: <code>{err!r}</code>",
+                f"❌ Telegram не выполнил возврат: <code>{err!r}</code>",
                 parse_mode=ParseMode.HTML,
             )
+            return
+
+        await db.set_payment_status_by_charge_id(charge_id, "refunded")
+        await message.answer(
+            f"✅ Возврат выполнен.\n"
+            f"Операция: <code>{charge_id}</code>\n"
+            f"Пользователь: <code>{refund_user_id}</code>",
+            parse_mode=ParseMode.HTML,
+        )
         return
+
     try:
         target_user_id = int(input_param)
     except ValueError:
@@ -304,22 +405,28 @@ async def refund_user_payments(message: types.Message, bot: Bot) -> None:
             parse_mode=ParseMode.HTML,
         )
         return
+
     charge_ids = await db.get_success_charge_ids_by_user_id(target_user_id)
     if not charge_ids:
         await message.answer(
             "❌ Нет успешных платежей для возврата.", parse_mode=ParseMode.HTML
         )
         return
+
     refunded_ids: list[str] = []
     for charge_id in charge_ids:
         try:
             await bot.refund_star_payment(
-                user_id=target_user_id, telegram_payment_charge_id=charge_id
+                user_id=target_user_id,
+                telegram_payment_charge_id=charge_id,
             )
             refunded_ids.append(charge_id)
         except TelegramAPIError:
-            logger.exception("error while refunding star payments")
-    await db.batch_set_payment_status_by_charge_ids(refunded_ids, "refunded")
+            logger.exception("ошибка при возврате платежа star")
+
+    if refunded_ids:
+        await db.batch_set_payment_status_by_charge_ids(refunded_ids, "refunded")
+
     await message.answer(
         f"✅ Успешно возвращено транзакций: <b>{len(refunded_ids)}</b>",
         parse_mode=ParseMode.HTML,

@@ -1,8 +1,9 @@
+import asyncio
 import logging
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -211,25 +212,45 @@ async def broadcast_cmd(message: types.Message, bot: Bot) -> None:
             parse_mode=ParseMode.HTML,
         )
         return
+
     user_ids = await db.get_all_user_ids()
-    success_count = 0
-    fail_count = 0
     status_msg = await message.answer(
         f"🔄 Запуск рассылки для <b>{len(user_ids)}</b> пользователей...",
         parse_mode=ParseMode.HTML,
     )
-    for uid in user_ids:
-        try:
-            if message.reply_to_message:
-                await message.reply_to_message.copy_to(chat_id=uid)
-            elif message.text:
-                text_to_send = message.text.split(maxsplit=1)[1]
-                await bot.send_message(
-                    chat_id=uid, text=text_to_send, parse_mode=ParseMode.HTML
-                )
-            success_count += 1
-        except TelegramAPIError:
-            fail_count += 1
+
+    text_to_send = None
+    if not message.reply_to_message and message.text:
+        text_to_send = message.text.split(maxsplit=1)[1]
+
+    semaphore = asyncio.Semaphore(20)
+    lock = asyncio.Lock()
+    success_count = 0
+    fail_count = 0
+
+    async def send_to_user(uid: int) -> None:
+        nonlocal success_count, fail_count
+        async with semaphore:
+            while True:
+                try:
+                    if message.reply_to_message:
+                        await message.reply_to_message.copy_to(chat_id=uid)
+                    elif text_to_send:
+                        await bot.send_message(
+                            chat_id=uid, text=text_to_send, parse_mode=ParseMode.HTML
+                        )
+                    async with lock:
+                        success_count += 1
+                    break
+                except TelegramRetryAfter as e:
+                    await asyncio.sleep(e.retry_after)
+                except TelegramAPIError:
+                    async with lock:
+                        fail_count += 1
+                    break
+
+    await asyncio.gather(*(send_to_user(uid) for uid in user_ids))
+
     await status_msg.edit_text(
         f"📊 <b>Рассылка завершена!</b>\n\n"
         f"✅ Успешно отправлено: <b>{success_count}</b>\n"
