@@ -198,6 +198,130 @@ async def add_balance_cmd(message: types.Message) -> None:
     )
 
 
+@router.message(Command("refund"))
+async def refund_cmd(message: types.Message, bot: Bot) -> None:
+    if not message.from_user or message.from_user.id != ADMIN_ID or not message.text:
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "⚠️ Пример использования:\n"
+            "• <code>/refund STX_ID</code> — возврат конкретной транзакции\n"
+            "• <code>/refund USER_ID</code> — возврат всех транзакций пользователя",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    target = args[1].strip()
+
+    if target.startswith("stx_") or not target.isdigit():
+        charge_id = target
+        payment = await db.get_payment_by_charge_id(charge_id)
+
+        if not payment:
+            await message.answer(
+                f"❌ Платёж <code>{charge_id}</code> не найден в базе данных.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        if payment.status == "refunded":
+            await message.answer(
+                f"⚠️ Платёж <code>{charge_id}</code> уже был возвращён ранее.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await process_single_refund(bot, message, payment.user_id, charge_id)
+        return
+
+    user_id = int(target)
+    successful_payments = await db.get_success_charge_ids_by_user_id(user_id)
+
+    if not successful_payments:
+        await message.answer(
+            f"❌ У пользователя <code>{user_id}</code> нет успешных платежей для возврата.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    status_msg = await message.answer(
+        f"🔄 Начат процесс возврата для пользователя <code>{user_id}</code> ({len(successful_payments)} шт.)...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    success_count = 0
+    fail_count = 0
+
+    for charge_id in successful_payments:
+        is_success = await process_single_refund(
+            bot=bot,
+            message=None,
+            user_id=user_id,
+            charge_id=charge_id,
+        )
+        if is_success:
+            success_count += 1
+        else:
+            fail_count += 1
+
+    await status_msg.edit_text(
+        f"📊 <b>Результат возврата средств для {user_id}:</b>\n\n"
+        f"✅ Успешно возвращено: <b>{success_count}</b>\n"
+        f"❌ Ошибок возврата: <b>{fail_count}</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def process_single_refund(
+    bot: Bot,
+    message: types.Message | None,
+    user_id: int,
+    charge_id: str,
+) -> bool:
+    is_updated = await db.set_payment_status_if_current(
+        charge_id=charge_id,
+        expected_status="success",
+        new_status="refund_pending",
+    )
+
+    if not is_updated:
+        if message:
+            await message.answer(
+                f"⚠️ Платёж <code>{charge_id}</code> уже обрабатывается или статус изменён.",
+                parse_mode=ParseMode.HTML,
+            )
+        return False
+
+    try:
+        await bot.refund_star_payment(
+            user_id=user_id,
+            telegram_payment_charge_id=charge_id,
+        )
+        await db.set_payment_status_by_charge_id(charge_id=charge_id, status="refunded")
+
+        if message:
+            await message.answer(
+                f"✅ Возврат платежа <code>{charge_id}</code> для пользователя <code>{user_id}</code> выполнен успешно.",
+                parse_mode=ParseMode.HTML,
+            )
+        return True
+
+    except TelegramAPIError as exc:
+        logger.exception("Refund error via Telegram API for charge %s", charge_id)
+        await db.set_payment_status_by_charge_id(
+            charge_id=charge_id, status="refund_failed"
+        )
+
+        if message:
+            await message.answer(
+                f"❌ Ошибка Telegram API при возврате <code>{charge_id}</code>:\n<code>{exc.message}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+        return False
+
+
 @router.message(Command("broadcast"))
 async def broadcast_cmd(message: types.Message, bot: Bot) -> None:
     if not message.from_user or message.from_user.id != ADMIN_ID:

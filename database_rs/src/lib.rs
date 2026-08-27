@@ -81,6 +81,15 @@ pub struct BannedUser {
     pub anon_code: String,
 }
 
+#[pyclass(get_all)]
+#[derive(Clone)]
+pub struct PaymentRecord {
+    pub charge_id: String,
+    pub user_id: i64,
+    pub payload: Option<String>,
+    pub status: String,
+}
+
 fn generate_anon_code() -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let mut rng = rand::thread_rng();
@@ -95,6 +104,7 @@ fn database(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SenderWithMessage>()?;
     m.add_class::<SenderWithCode>()?;
     m.add_class::<BannedUser>()?;
+    m.add_class::<PaymentRecord>()?;
     m.add_function(wrap_pyfunction!(init_db, m)?)?;
     m.add_function(wrap_pyfunction!(is_banned, m)?)?;
     m.add_function(wrap_pyfunction!(ban_user, m)?)?;
@@ -121,7 +131,9 @@ fn database(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(give_balance, m)?)?;
     m.add_function(wrap_pyfunction!(get_banned_anon_code_by_user_id, m)?)?;
     m.add_function(wrap_pyfunction!(get_payment_user_id_by_charge_id, m)?)?;
+    m.add_function(wrap_pyfunction!(get_payment_by_charge_id, m)?)?;
     m.add_function(wrap_pyfunction!(set_payment_status_by_charge_id, m)?)?;
+    m.add_function(wrap_pyfunction!(set_payment_status_if_current, m)?)?;
     m.add_function(wrap_pyfunction!(batch_set_payment_status_by_charge_ids, m)?)?;
     m.add_function(wrap_pyfunction!(get_success_charge_ids_by_user_id, m)?)?;
     m.add_function(wrap_pyfunction!(get_all_user_ids, m)?)?;
@@ -149,7 +161,7 @@ fn init_db(py: Python<'_>, db_path: String) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&db_path)
+            .connect(&format!("sqlite:{}", db_path))
             .await
             .map_err(db_err)?;
 
@@ -162,100 +174,10 @@ fn init_db(py: Python<'_>, db_path: String) -> PyResult<Bound<'_, PyAny>> {
             .await
             .map_err(db_err)?;
 
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS messages (
-                admin_msg_id INTEGER PRIMARY KEY,
-                sender_id INTEGER,
-                anon_code TEXT,
-                is_priority INTEGER DEFAULT 0,
-                user_msg_id INTEGER
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .map_err(db_err)?;
-
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS banned (
-                user_id INTEGER PRIMARY KEY,
-                anon_code TEXT
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .map_err(db_err)?;
-
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                balance INTEGER DEFAULT 0,
-                air_purchased INTEGER DEFAULT 0,
-                priority_messages INTEGER DEFAULT 0,
-                sent_count INTEGER DEFAULT 0,
-                received_count INTEGER DEFAULT 0,
-                is_vip INTEGER DEFAULT 0,
-                referrer_id INTEGER DEFAULT NULL,
-                anon_code TEXT,
-                priority_sent_count INTEGER DEFAULT 0,
-                total_spent_stars INTEGER DEFAULT 0,
-                answer_streak INTEGER DEFAULT 0,
-                code_auto_refresh TEXT DEFAULT 'never',
-                show_vip_cats INTEGER DEFAULT 1,
-                inline_share_mode TEXT DEFAULT 'full',
-                show_air INTEGER DEFAULT 1,
-                show_priority INTEGER DEFAULT 1,
-                show_sent INTEGER DEFAULT 1,
-                show_received INTEGER DEFAULT 1,
-                show_achievements INTEGER DEFAULT 1
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .map_err(db_err)?;
-
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS payments (
-                charge_id TEXT PRIMARY KEY,
-                user_id INTEGER,
-                payload TEXT,
-                status TEXT DEFAULT 'success'
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .map_err(db_err)?;
-
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS user_achievements (
-                user_id INTEGER,
-                ach_id TEXT,
-                unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, ach_id)
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .map_err(db_err)?;
-
-        let migrations = [
-            "ALTER TABLE users ADD COLUMN anon_code TEXT",
-            "ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL",
-            "ALTER TABLE users ADD COLUMN priority_sent_count INTEGER DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN total_spent_stars INTEGER DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN answer_streak INTEGER DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN code_auto_refresh TEXT DEFAULT 'never'",
-            "ALTER TABLE users ADD COLUMN show_vip_cats INTEGER DEFAULT 1",
-            "ALTER TABLE users ADD COLUMN inline_share_mode TEXT DEFAULT 'full'",
-            "ALTER TABLE users ADD COLUMN show_air INTEGER DEFAULT 1",
-            "ALTER TABLE users ADD COLUMN show_priority INTEGER DEFAULT 1",
-            "ALTER TABLE users ADD COLUMN show_sent INTEGER DEFAULT 1",
-            "ALTER TABLE users ADD COLUMN show_received INTEGER DEFAULT 1",
-            "ALTER TABLE users ADD COLUMN show_achievements INTEGER DEFAULT 1",
-        ];
-
-        for query in migrations {
-            let _ = sqlx::query(query).execute(&pool).await;
-        }
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .map_err(db_err)?;
 
         let ban_cache = DashSet::new();
         let rows = sqlx::query("SELECT user_id FROM banned")
@@ -583,12 +505,15 @@ fn update_user_setting(
 fn waste_priority_message(py: Python<'_>, user_id: i64) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let state = get_state().await?;
-        sqlx::query("UPDATE users SET priority_messages = priority_messages - 1 WHERE user_id = ?")
-            .bind(user_id)
-            .execute(&state.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(())
+        let result = sqlx::query(
+            "UPDATE users SET priority_messages = priority_messages - 1 WHERE user_id = ? AND priority_messages > 0",
+        )
+        .bind(user_id)
+        .execute(&state.pool)
+        .await
+        .map_err(db_err)?;
+
+        Ok(result.rows_affected() > 0)
     })
 }
 
@@ -693,13 +618,17 @@ fn get_sender_with_message_by_admin_msg(
 fn take_balance(py: Python<'_>, amount: i64, user_id: i64) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let state = get_state().await?;
-        sqlx::query("UPDATE users SET balance = balance - ? WHERE user_id = ?")
-            .bind(amount)
-            .bind(user_id)
-            .execute(&state.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(())
+        let result = sqlx::query(
+            "UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?",
+        )
+        .bind(amount)
+        .bind(user_id)
+        .bind(amount)
+        .execute(&state.pool)
+        .await
+        .map_err(db_err)?;
+
+        Ok(result.rows_affected() > 0)
     })
 }
 
@@ -874,6 +803,31 @@ fn get_payment_user_id_by_charge_id(
 }
 
 #[pyfunction]
+fn get_payment_by_charge_id(py: Python<'_>, charge_id: String) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        let state = get_state().await?;
+        let row: Option<(String, i64, Option<String>, String)> = sqlx::query_as(
+            "SELECT charge_id, user_id, payload, status FROM payments WHERE charge_id = ?",
+        )
+        .bind(charge_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db_err)?;
+
+        if let Some((charge_id, user_id, payload, status)) = row {
+            Ok(Some(PaymentRecord {
+                charge_id,
+                user_id,
+                payload,
+                status,
+            }))
+        } else {
+            Ok(None)
+        }
+    })
+}
+
+#[pyfunction]
 fn set_payment_status_by_charge_id(
     py: Python<'_>,
     charge_id: String,
@@ -888,6 +842,28 @@ fn set_payment_status_by_charge_id(
             .await
             .map_err(db_err)?;
         Ok(())
+    })
+}
+
+#[pyfunction]
+fn set_payment_status_if_current(
+    py: Python<'_>,
+    charge_id: String,
+    expected_status: String,
+    new_status: String,
+) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        let state = get_state().await?;
+        let result =
+            sqlx::query("UPDATE payments SET status = ? WHERE charge_id = ? AND status = ?")
+                .bind(new_status)
+                .bind(charge_id)
+                .bind(expected_status)
+                .execute(&state.pool)
+                .await
+                .map_err(db_err)?;
+
+        Ok(result.rows_affected() > 0)
     })
 }
 
