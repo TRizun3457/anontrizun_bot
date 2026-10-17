@@ -115,6 +115,9 @@ async def unban_by_code(message: types.Message, bot: Bot) -> None:
 
 @router.callback_query(F.data.startswith("accept_unban_"))
 async def accept_unban_handler(callback: types.CallbackQuery, bot: Bot) -> None:
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer()
+        return
     if not callback.data or not isinstance(callback.message, types.Message):
         return
     anon_code = callback.data.split("accept_unban_")[1]
@@ -132,18 +135,22 @@ async def accept_unban_handler(callback: types.CallbackQuery, bot: Bot) -> None:
             logger.exception(
                 "error while sending unban application accept message to user"
             )
-        current_text = callback.message.text or ""
+        current_text = callback.message.html_text
         await callback.message.edit_text(
             current_text
             + f"\n\n<b>Статус: РАЗБАНЕН ✅ (Новый код: <code>{new_code}</code>)</b>",
             parse_mode=ParseMode.HTML,
         )
+        await callback.answer()
     else:
         await callback.answer("Пользователь уже разбанен.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("decline_unban_"))
 async def decline_unban_handler(callback: types.CallbackQuery, bot: Bot) -> None:
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer()
+        return
     if not callback.data or not isinstance(callback.message, types.Message):
         return
     user_id = int(callback.data.split("decline_unban_")[1])
@@ -155,7 +162,7 @@ async def decline_unban_handler(callback: types.CallbackQuery, bot: Bot) -> None
         )
     except TelegramAPIError:
         logger.exception("error while sending unban application deny message to user")
-    current_text = callback.message.text or ""
+    current_text = callback.message.html_text
     await callback.message.edit_text(
         current_text + "\n\n<b>Статус: ОТКЛОНЕНО ❌</b>",
         parse_mode=ParseMode.HTML,

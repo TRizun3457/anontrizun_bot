@@ -1,9 +1,9 @@
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
-from typing import override
+from typing import Any, override
 
-from aiogram import BaseMiddleware
+from aiogram import BaseMiddleware, Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message, TelegramObject
 
@@ -17,12 +17,6 @@ class ThrottlingMiddleware(BaseMiddleware):
         notify_cooldown: float = 3.0,
         cleanup_interval: int = 300,
     ) -> None:
-        """
-        :param command_limit: Минимальный интервал для команд и быстрых запросов (в секундах).
-        :param text_limit: Интервал для обычных текстовых сообщений.
-        :param heavy_limit: Интервал для файлов и медиаконтента (фото, видео, аудио).
-        :param notify_cooldown: Минимальный интервал между предупреждающими сообщениями пользователю.
-        """
         self.command_limit = command_limit
         self.text_limit = text_limit
         self.heavy_limit = heavy_limit
@@ -33,11 +27,11 @@ class ThrottlingMiddleware(BaseMiddleware):
         self._user_notify_timeouts: dict[int, float] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
 
-    def start(self) -> None:
+    async def start(self, *args: Any, **kwargs: Any) -> None:
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
-    async def stop(self) -> None:
+    async def stop(self, *args: Any, **kwargs: Any) -> None:
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
             try:
@@ -76,18 +70,35 @@ class ThrottlingMiddleware(BaseMiddleware):
 
         return self.text_limit
 
+    @staticmethod
+    def _is_command_for_bot(event: Message, bot_username: str | None) -> bool:
+        text = event.text or event.caption or ""
+        for entity in event.entities or event.caption_entities or []:
+            if entity.type != "bot_command" or entity.offset != 0:
+                continue
+            command = text[entity.offset : entity.offset + entity.length]
+            _, _, target = command.partition("@")
+            if not target:
+                return True
+            return bot_username is not None and target.lower() == bot_username.lower()
+        return False
+
     @override
     async def __call__(
         self,
-        handler: Callable[[TelegramObject, dict[str, object]], Awaitable[object]],
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
         event: TelegramObject,
-        data: dict[str, object],
-    ) -> object:
-        if self._cleanup_task is None:
-            self.start()
-
+        data: dict[str, Any],
+    ) -> Any:
         if not isinstance(event, Message) or not event.from_user:
             return await handler(event, data)
+
+        in_group = event.chat.type != "private"
+        if in_group:
+            bot = data.get("bot")
+            bot_username = (await bot.me()).username if isinstance(bot, Bot) else None
+            if not self._is_command_for_bot(event, bot_username):
+                return await handler(event, data)
 
         user_id = event.from_user.id
         current_time = time.monotonic()
@@ -96,7 +107,7 @@ class ThrottlingMiddleware(BaseMiddleware):
         last_msg_time = self._user_timeouts.get(user_id, 0.0)
         if current_time - last_msg_time < required_limit:
             last_notify_time = self._user_notify_timeouts.get(user_id, 0.0)
-            if current_time - last_notify_time >= self.notify_cooldown:
+            if not in_group and current_time - last_notify_time >= self.notify_cooldown:
                 self._user_notify_timeouts[user_id] = current_time
                 try:
                     await event.answer(

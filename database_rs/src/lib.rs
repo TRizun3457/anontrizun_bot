@@ -419,41 +419,71 @@ fn register_user(
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let state = get_state().await?;
+        let mut tx = state.pool.begin().await.map_err(db_err)?;
 
         let existing: Option<String> =
             sqlx::query_scalar("SELECT anon_code FROM users WHERE user_id = ?")
                 .bind(user_id)
-                .fetch_optional(&state.pool)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(db_err)?;
 
         if existing.is_some() {
+            tx.commit().await.map_err(db_err)?;
             return get_user_stats_int(user_id, &state).await;
         }
 
-        let anon_code = generate_anon_code();
-        let ref_id = referrer_id.filter(|&r| r != user_id);
+        let valid_referrer_id = match referrer_id {
+            Some(ref_id) if ref_id != user_id => {
+                let exists: Option<i64> =
+                    sqlx::query_scalar("SELECT 1 FROM users WHERE user_id = ?")
+                        .bind(ref_id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(db_err)?;
+                if exists.is_some() {
+                    Some(ref_id)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
 
-        sqlx::query(
-            "INSERT OR IGNORE INTO users (user_id, anon_code, referrer_id) VALUES (?, ?, ?)",
-        )
-        .bind(user_id)
-        .bind(&anon_code)
-        .bind(ref_id)
-        .execute(&state.pool)
-        .await
-        .map_err(db_err)?;
+        let max_retries = 5;
+        for _ in 0..max_retries {
+            let anon_code = generate_anon_code();
 
-        sqlx::query(
-            "UPDATE users SET anon_code = ? WHERE user_id = ? AND (anon_code IS NULL OR anon_code = '')"
-        )
-        .bind(&anon_code)
-        .bind(user_id)
-        .execute(&state.pool)
-        .await
-        .map_err(db_err)?;
+            let res =
+                sqlx::query("INSERT INTO users (user_id, anon_code, referrer_id) VALUES (?, ?, ?)")
+                    .bind(user_id)
+                    .bind(&anon_code)
+                    .bind(valid_referrer_id)
+                    .execute(&mut *tx)
+                    .await;
 
-        get_user_stats_int(user_id, &state).await
+            match res {
+                Ok(_) => {
+                    tx.commit().await.map_err(db_err)?;
+                    return get_user_stats_int(user_id, &state).await;
+                }
+                Err(sqlx::Error::Database(db_err_obj)) if db_err_obj.is_unique_violation() => {
+                    let err_msg = db_err_obj.message();
+
+                    if err_msg.contains("users.user_id") || err_msg.contains("user_id") {
+                        tx.rollback().await.map_err(db_err)?;
+                        return get_user_stats_int(user_id, &state).await;
+                    }
+
+                    continue;
+                }
+                Err(e) => return Err(db_err(e)),
+            }
+        }
+
+        Err(PyRuntimeError::new_err(
+            "Не удалось сгенерировать уникальный anon_code",
+        ))
     })
 }
 
@@ -942,10 +972,7 @@ fn get_user_id_by_id_or_code(py: Python<'_>, identifier: String) -> PyResult<Bou
                     .fetch_optional(&state.pool)
                     .await
                     .map_err(db_err)?;
-            if res.is_some() {
-                return Ok(res);
-            }
-            return Ok(Some(uid));
+            return Ok(res);
         }
 
         let res: Option<i64> =

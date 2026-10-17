@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -7,22 +8,28 @@ from aiogram import BaseMiddleware, Bot
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramNetworkError, TelegramServerError
-from aiogram.methods import TelegramMethod
+from aiogram.methods import CopyMessage, SendMessage, TelegramMethod
 from aiogram.methods.base import TelegramType
-from aiogram.types import TelegramObject, Update
+from aiogram.types import Message, TelegramObject, Update
 
 logger = logging.getLogger(__name__)
 
 RETRYABLE = (TelegramNetworkError, TelegramServerError, asyncio.TimeoutError)
+NON_RETRYABLE_METHODS = (SendMessage, CopyMessage)
 
 
 class RetrySession(AiohttpSession):
-    """Повторяет запрос к Telegram API при сбое сети. Без прокси."""
-
-    def __init__(self, retries: int = 3, delay: float = 1.0, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 30.0,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self.retries = retries
-        self.delay = delay
+        self.base_delay = base_delay
+        self.max_delay = max_delay
 
     async def make_request(
         self,
@@ -31,6 +38,11 @@ class RetrySession(AiohttpSession):
         timeout: int | None = None,
         **kwargs: Any,
     ) -> TelegramType:
+        if isinstance(method, NON_RETRYABLE_METHODS) or getattr(
+            method, "__api_method__", ""
+        ) in {"refundStarPayment", "refund_star_payment"}:
+            return await super().make_request(bot, method, timeout=timeout, **kwargs)
+
         last_error: Exception | None = None
         for attempt in range(self.retries):
             try:
@@ -39,22 +51,35 @@ class RetrySession(AiohttpSession):
                 )
             except RETRYABLE as error:
                 last_error = error
+                if attempt == self.retries - 1:
+                    break
+
+                delay = min(self.max_delay, self.base_delay * (2**attempt))
+                jitter = random.uniform(0, 0.1 * delay)
+                total_delay = delay + jitter
+
                 logger.warning(
-                    "Сбой сети при запросе %s (попытка %s/%s): %s",
-                    method,
+                    "Сбой сети при запросе %s (попытка %s/%s): %s. Повтор через %.2f сек",
+                    method.__class__.__name__,
                     attempt + 1,
                     self.retries,
                     error,
+                    total_delay,
                 )
-                await asyncio.sleep(self.delay * (attempt + 1))
+                await asyncio.sleep(total_delay)
+
         if last_error is not None:
             raise last_error
         raise RuntimeError("RetrySession: нет попыток запроса")
 
 
-class ErrorGuardMiddleware(BaseMiddleware):
-    """Если обработчик упал — пользователь всё равно получает ответ."""
+def is_addressed_to_bot(message: Message) -> bool:
+    if message.chat.type == "private":
+        return True
+    return any(entity.type == "bot_command" for entity in message.entities or [])
 
+
+class ErrorGuardMiddleware(BaseMiddleware):
     async def __call__(
         self,
         handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
@@ -67,25 +92,32 @@ class ErrorGuardMiddleware(BaseMiddleware):
             logger.exception(
                 "Обработчик упал на update %s", getattr(event, "update_id", "?")
             )
-            message = None
-            if isinstance(event, Update):
-                message = event.message
-                if message is None and event.callback_query is not None:
-                    message = event.callback_query.message
-            if message is None:
+
+            bot: Bot | None = data.get("bot")
+            if not bot or not isinstance(event, Update):
                 return None
-            bot: Bot = data["bot"]
-            for attempt in range(3):
-                try:
+
+            try:
+                if event.inline_query is not None:
+                    await bot.answer_inline_query(
+                        inline_query_id=event.inline_query.id,
+                        results=[],
+                        cache_time=1,
+                        is_personal=True,
+                    )
+                elif event.callback_query is not None:
+                    await bot.answer_callback_query(
+                        callback_query_id=event.callback_query.id,
+                        text="⚠️ Временная ошибка. Попробуйте еще раз.",
+                        show_alert=True,
+                    )
+                elif event.message is not None and is_addressed_to_bot(event.message):
                     await bot.send_message(
-                        chat_id=message.chat.id,
+                        chat_id=event.message.chat.id,
                         text="⚠️ <b>Временные неполадки.</b> Попробуйте ещё раз.",
                         parse_mode=ParseMode.HTML,
                     )
-                    break
-                except RETRYABLE:
-                    await asyncio.sleep(1.0 * (attempt + 1))
-                except Exception:
-                    logger.exception("Не удалось отправить заглушку об ошибке")
-                    break
+            except Exception:
+                logger.exception("Не удалось отправить заглушку об ошибке")
+
             return None

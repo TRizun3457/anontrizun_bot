@@ -4,8 +4,9 @@ import logging
 from aiogram import Bot, Dispatcher
 
 import database as db
-from config import BOT_TOKEN
+from config import BOT_TOKEN, DB_NAME
 from handlers import admin, payments, user
+from middlewares.chat_check import AllowedChatMiddleware
 from middlewares.throttling import ThrottlingMiddleware
 from resilience import ErrorGuardMiddleware, RetrySession
 
@@ -14,7 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
-    await db.init_db("bot_data.db")
+    await db.init_db(DB_NAME)
+
     bot = Bot(token=BOT_TOKEN, session=RetrySession(timeout=60))
     dp = Dispatcher()
 
@@ -24,17 +26,21 @@ async def main() -> None:
         heavy_limit=2.5,
     )
 
+    dp.startup.register(throttling_middleware.start)
+    dp.shutdown.register(throttling_middleware.stop)
+
     dp.update.outer_middleware(ErrorGuardMiddleware())
+    dp.message.middleware(AllowedChatMiddleware())
     dp.message.middleware(throttling_middleware)
 
     dp.include_routers(
-        user.router,
-        admin.router,
         payments.router,
+        admin.router,
+        user.router,
     )
 
-    bot_username = (await bot.get_me()).username
-    if bot_username is None:
+    bot_info = await bot.get_me()
+    if bot_info.username is None:
         raise RuntimeError("bot username is None")
 
     logger.info("🚀 Бот запущен...")
@@ -44,10 +50,11 @@ async def main() -> None:
             allowed_updates=dp.resolve_used_update_types(),
             handle_signals=False,
             polling_timeout=60,
-            bot_username=bot_username,
         )
     finally:
-        await throttling_middleware.stop()
+        await bot.session.close()
+        if hasattr(db, "close_db"):
+            await db.close_db()
         logger.info("🛑 Бот успешно остановлен.")
 
 

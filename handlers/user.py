@@ -46,6 +46,8 @@ class ReplyState(StatesGroup):
     waiting_for_reply = State()
 
 
+def is_plain_message(message: types.Message) -> bool:
+    return not (message.text or "").startswith("/")
 
 
 def get_banned_keyboard() -> InlineKeyboardMarkup:
@@ -213,11 +215,10 @@ async def toggle_visibility_field(user_id: int, field_name: str) -> bool:
     return True
 
 
-
-
 @router.message(Command("anon"))
-async def anon_group_cmd(message: types.Message, bot_username: str) -> None:
+async def anon_group_cmd(message: types.Message, bot: Bot) -> None:
     if message.chat.type in ("group", "supergroup"):
+        bot_username = (await bot.me()).username
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -281,7 +282,7 @@ async def start_cmd(message: types.Message, command: CommandObject) -> None:
     )
 
 
-@router.message(Command("status"))
+@router.message(Command("status"), F.chat.type == "private")
 @router.callback_query(F.data == "my_status")
 async def show_status(event: types.Message | types.CallbackQuery) -> None:
     if event.from_user is None:
@@ -371,7 +372,7 @@ async def show_achievements(callback: types.CallbackQuery) -> None:
     await send_or_edit(callback, text, kb)
 
 
-@router.message(Command("settings"))
+@router.message(Command("settings"), F.chat.type == "private")
 @router.callback_query(F.data == "settings_menu")
 async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None:
     if event.from_user is None:
@@ -564,9 +565,8 @@ async def handle_toggle_share_visibility(callback: types.CallbackQuery) -> None:
 
 
 @router.inline_query()
-async def inline_query_handler(
-    inline_query: types.InlineQuery, bot_username: str
-) -> None:
+async def inline_query_handler(inline_query: types.InlineQuery, bot: Bot) -> None:
+    bot_username = (await bot.me()).username
     user_id = inline_query.from_user.id
     user_stats = await db.register_user(user_id)
     results: list[Any] = []
@@ -630,6 +630,10 @@ async def inline_query_handler(
 
 @router.callback_query(F.data.startswith("reply_"))
 async def handle_reply_button(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer()
+        return
+
     if callback.data is None or not isinstance(callback.message, types.Message):
         await callback.answer("Ошибка вызова кнопки.", show_alert=True)
         return
@@ -673,9 +677,9 @@ async def send_reply_to_user(
         )
 
 
-@router.message(~F.text.startswith("/"))
+@router.message(F.chat.type == "private", F.func(is_plain_message))
 async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
-    if message.chat.type != "private" or message.from_user is None:
+    if message.from_user is None:
         return
 
     ignored_types = {
@@ -708,22 +712,11 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
         )
         return
 
+    is_priority = user_stats.priority_messages > 0
+    if is_priority:
+        await db.waste_priority_message(user_id)
+
     try:
-        is_priority = user_stats.priority_messages > 0
-        if is_priority:
-            await db.waste_priority_message(user_id)
-            await db.increment_priority_sent_count(user_id)
-
-        await db.increment_sent_count(user_id)
-
-        msg_text = (message.text or message.caption or "").lower()
-        if "42" in msg_text:
-            await db.grant_achievement(user_id, "bro_42")
-        if "67" in msg_text:
-            await db.grant_achievement(user_id, "degrade_67")
-
-        await db.check_and_grant_achievements(user_id)
-
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -750,21 +743,38 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
             )
 
         sent_msg = await message.copy_to(chat_id=ADMIN_ID, reply_markup=keyboard)
-        await db.add_message(
-            sent_msg.message_id,
-            user_id,
-            user_stats.anon_code,
-            is_priority,
-            message.message_id,
-        )
+    except TelegramAPIError:
+        logger.exception("Forward error from %s", user_id)
+        if is_priority:
+            await db.increment_priority_messages(user_id)
+        await message.answer("❌ Ошибка при отправке.", parse_mode=ParseMode.HTML)
+        return
 
+    await db.add_message(
+        sent_msg.message_id,
+        user_id,
+        user_stats.anon_code,
+        is_priority,
+        message.message_id,
+    )
+    if is_priority:
+        await db.increment_priority_sent_count(user_id)
+    await db.increment_sent_count(user_id)
+
+    msg_text = (message.text or message.caption or "").lower()
+    if "42" in msg_text:
+        await db.grant_achievement(user_id, "bro_42")
+    if "67" in msg_text:
+        await db.grant_achievement(user_id, "degrade_67")
+
+    await db.check_and_grant_achievements(user_id)
+
+    try:
         confirm_text = (
             "⭐ Приоритетное сообщение отправлено!"
             if is_priority
             else "🚀 Сообщение отправлено анонимно!"
         )
         await message.answer(confirm_text, parse_mode=ParseMode.HTML)
-
     except TelegramAPIError:
-        logger.exception("Forward error from %s", user_id)
-        await message.answer("❌ Ошибка при отправке.", parse_mode=ParseMode.HTML)
+        logger.exception("Confirm error to %s", user_id)
