@@ -1,10 +1,14 @@
-.venv/
-venv/
-env/
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Local environment
 .env
 *.env
 !.env.example
 
+# SQLite databases
 *.db
 *.db-shm
 *.db-wal
@@ -12,21 +16,9 @@ env/
 *.sqlite
 *.sqlite3
 
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.uv/
-
-**/target/
-**/*.so
-**/*.pyd
-**/*.dylib
-
-.zed/
-.vscode/
+# Editors
 .idea/
+.vscode/
 
+# Logs
 *.log

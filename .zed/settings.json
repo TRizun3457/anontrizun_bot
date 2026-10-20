@@ -1,7 +1,7 @@
 {
   "languages": {
-    "Python": {
-      "language_servers": ["ty", "ruff"],
+    "Rust": {
+      "language_servers": ["rust-analyzer"],
       "format_on_save": "on"
     }
   }
