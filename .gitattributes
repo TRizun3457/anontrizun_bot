@@ -1,0 +1,5 @@
+# Check text files out with LF on every platform. `tests/migration.rs` pins the
+# SHA-384 of `migrations/0001_init.sql`, and sqlx embeds those exact bytes and
+# checksums them against already-migrated databases, so a CRLF checkout on
+# Windows would break existing `bot_data.db` files.
+* text=auto eol=lf
