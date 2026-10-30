@@ -1,6 +1,6 @@
 from aiogram import Router
 
-from . import forward, inline, potato, profile, reply, settings, start
+from . import forward, inline, potato, profile, reply, settings, shop, start
 
 router = Router()
 router.include_routers(
@@ -8,6 +8,7 @@ router.include_routers(
     profile.router,
     settings.router,
     potato.router,
+    shop.router,
     inline.router,
     reply.router,
     forward.router,

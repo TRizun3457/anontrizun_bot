@@ -136,8 +136,8 @@ def test_expiry_explodes_and_reports():
     clock.t += 601
     out = run(svc.resolve_expired())
     assert [r.victim for r in out] == [holder]
-    assert any("БАБАХ" in t for t in bot.to(holder))
-    assert any("взорвалась" in t for t in bot.to(-1))
+    assert any("СГНИЛО" in t for t in bot.to(holder))
+    assert any("сгнила" in t for t in bot.to(-1))
     assert run(svc.resolve_expired()) == []
     stats = run(svc.store.get_stats(holder))
     assert stats["exploded"] == 1
@@ -459,3 +459,58 @@ def test_record_purchase_announces_achievement():
     svc, bot, _ = make({1: 0})
     run(svc.record_purchase(1, "launch", 30))
     assert any("Друг гниения" in t for t in bot.to(1))
+
+
+def test_command_starter_cannot_leave_until_game_ends():
+    svc, _, clock = make({1: 0, 5: 0})
+    game = run(svc.start_game(-1, 5, 600))
+    with pytest.raises(PotatoError):
+        run(svc.store.set_enabled(5, False))
+    clock.t += 601
+    run(svc.resolve_expired())
+    run(svc.store.set_enabled(5, False))
+    assert run(svc.store.get_stats(5))["enabled"] == 0
+    assert game.id
+
+
+def test_paid_launch_locks_leaving_then_releases():
+    svc, _, clock = make({1: 0, 2: 0})
+    run(svc.launch_paid(2))
+    with pytest.raises(PotatoError):
+        run(svc.store.set_enabled(2, False))
+    clock.t += 3601
+    run(svc.resolve_expired())
+    run(svc.store.set_enabled(2, False))
+
+
+def test_strong_rot_buyer_locked_for_seven_hours():
+    svc, _, clock = make({1: 0, 2: 0})
+    run(svc.activate_strong_rot(2))
+    lock = run(svc.store.leave_lock(2))
+    assert lock is not None and lock[0] == "strong"
+    with pytest.raises(PotatoError) as err:
+        run(svc.store.set_enabled(2, False))
+    assert "через" in str(err.value)
+    clock.t += 7 * 3600 + 1
+    assert run(svc.store.leave_lock(2)) is None
+    run(svc.store.set_enabled(2, False))
+
+
+def test_lock_returns_left_user_to_the_game():
+    svc, _, _ = make({1: 0, 2: 0})
+    run(svc.store.set_enabled(2, False))
+    run(svc.launch_paid(2))
+    assert run(svc.store.get_stats(2))["enabled"] == 1
+    run(svc.store.set_enabled(1, False))
+    run(svc.activate_strong_rot(1))
+    assert run(svc.store.get_stats(1))["enabled"] == 1
+
+
+def test_holder_message_is_themed_with_deadline_and_vip_gold():
+    svc, bot, _clock = make({1: 0, 2: 1})
+    svc.utc_offset = 0
+    run(svc.store.set_enabled(1, False))
+    game = run(svc.start_game(-1, 99, 600))
+    text = bot.to(game.holder_id)[0]
+    assert "Золотая гнилушка" in text and "🟨" in text
+    assert "Сгниёт в" in text

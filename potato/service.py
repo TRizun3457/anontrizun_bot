@@ -18,6 +18,7 @@ from .store import (
     PotatoStore,
     random_duration,
 )
+from .theme import fmt_duration, holder_text, poison_text
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +56,6 @@ ROT_ANNOUNCE = (
     "Сегодня по боту гуляют сразу несколько гнилых картошек. Таймер у каждой — 1 час, "
     "передавать их можно бесконечно, но кому-то всё равно не повезёт."
 )
-
-
-def fmt_duration(seconds: int) -> str:
-    minutes = max(1, round(seconds / 60))
-    hours, mins = divmod(minutes, 60)
-    if hours and mins:
-        return f"{hours} ч. {mins} мин."
-    if hours:
-        return f"{hours} ч."
-    return f"{mins} мин."
 
 
 def fmt_achievements(ids: list[str]) -> str:
@@ -139,19 +130,18 @@ class PotatoService:
 
     async def _notify_holder(self, game: Game) -> bool:
         assert game.holder_id is not None
-        if game.kind == "rot":
-            text = (
-                "🤢🥔 <b>День гниения! Вы — Гнилая картошка!</b>\n\n"
-                f"У вас всего <b>{fmt_duration(game.duration_sec)}</b>, чтобы анонимно "
-                "перекинуть её другому пользователю бота. Сегодня картошек несколько, "
-                "и кто-то обязательно загниёт! 💥"
-            )
-        else:
-            text = (
-                "🥔🔥 <b>Вы — Гнилая картошка!</b>\n\n"
-                f"У вас есть <b>{fmt_duration(game.duration_sec)}</b>, чтобы анонимно "
-                "передать её другому пользователю бота. Иначе она взорвётся! 💥"
-            )
+        deadline = (
+            self._local(game.expires_at).strftime("%H:%M")
+            if game.expires_at is not None
+            else None
+        )
+        text = holder_text(
+            game.kind,
+            fmt_duration(game.duration_sec),
+            deadline,
+            await self.store.is_vip(game.holder_id),
+            self._rng,
+        )
         return await self._say(game.holder_id, text, self._pass_markup(game.id))
 
     async def _assign_and_notify(
@@ -246,11 +236,13 @@ class PotatoService:
             return 0
         return max(0, until - self.store.now())
 
-    async def activate_strong_rot(self) -> int:
+    async def activate_strong_rot(self, buyer_id: int | None = None) -> int:
         now = self.store.now()
         current = await self.store.get_auto("strong_until") or 0
         until = max(current, now) + STRONG_ROT_SECONDS
         await self.store.set_auto("strong_until", until)
+        if buyer_id is not None:
+            await self.store.lock_until(buyer_id, until)
         await self._say(self.auto_chat_id, STRONG_ANNOUNCE)
         return until
 
@@ -479,13 +471,13 @@ class PotatoService:
             results.append(res)
             await self._say(
                 res.victim,
-                "💥 <b>БАБАХ!</b> Картошка взорвалась у вас в руках — вы не успели её передать.",
+                poison_text(await self.store.is_vip(res.victim)),
             )
             await self._announce_achievements(res.victim, res.new_achievements)
             title = (
-                "🤢💥 <b>Одна из гнилых картошек дня гниения взорвалась!</b>"
+                "🤢☠️ <b>Одна из гнилых картошек дня гниения сгнила!</b>"
                 if game.kind == "rot"
-                else "💥 <b>Гнилая картошка взорвалась!</b>"
+                else "☠️ <b>Гнилая картошка сгнила!</b>"
             )
             await self._say(
                 game.chat_id,

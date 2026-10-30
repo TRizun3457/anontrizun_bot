@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .achievements import RULES
+from .theme import fmt_duration
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "database_rs" / "migrations"
 BASE_MIGRATION = MIGRATIONS_DIR / "0002_potato.sql"
@@ -237,8 +238,64 @@ class PotatoStore:
 
         return await self._run(fn)
 
+    def _leave_lock(
+        self, conn: sqlite3.Connection, user_id: int
+    ) -> tuple[str, int] | None:
+        game = conn.execute(
+            "SELECT 1 FROM potato_games WHERE starter_id = ? AND status = 'active'",
+            (user_id,),
+        ).fetchone()
+        if game:
+            return ("game", 0)
+        row = conn.execute(
+            "SELECT next_at FROM potato_auto WHERE key = ?", (f"lock:{user_id}",)
+        ).fetchone()
+        if row and row["next_at"] > self._now():
+            return ("strong", row["next_at"] - self._now())
+        return None
+
+    async def leave_lock(self, user_id: int) -> tuple[str, int] | None:
+        def fn(conn: sqlite3.Connection) -> tuple[str, int] | None:
+            return self._leave_lock(conn, user_id)
+
+        return await self._run(fn)
+
+    async def lock_until(self, user_id: int, until: int) -> None:
+        def fn(conn: sqlite3.Connection) -> None:
+            self._ensure_player(conn, user_id)
+            conn.execute(
+                "UPDATE potato_players SET enabled = 1 WHERE user_id = ?", (user_id,)
+            )
+            conn.execute(
+                """INSERT INTO potato_auto (key, next_at) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET next_at = MAX(next_at, excluded.next_at)""",
+                (f"lock:{user_id}", until),
+            )
+
+        await self._run(fn)
+
+    async def is_vip(self, user_id: int) -> bool:
+        def fn(conn: sqlite3.Connection) -> bool:
+            row = conn.execute(
+                "SELECT is_vip FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return bool(row and row["is_vip"])
+
+        return await self._run(fn)
+
     async def set_enabled(self, user_id: int, enabled: bool) -> None:
         def fn(conn: sqlite3.Connection) -> None:
+            if not enabled:
+                lock = self._leave_lock(conn, user_id)
+                if lock is not None:
+                    if lock[0] == "game":
+                        raise PotatoError(
+                            "Вы запустили игру — выйти можно, когда она закончится."
+                        )
+                    raise PotatoError(
+                        "Вы купили сильное гниение — выйти можно через "
+                        f"{fmt_duration(lock[1])}."
+                    )
             self._ensure_player(conn, user_id)
             conn.execute(
                 "UPDATE potato_players SET enabled = ? WHERE user_id = ?",
@@ -282,6 +339,10 @@ class PotatoStore:
     async def record_start(self, user_id: int) -> list[str]:
         def fn(conn: sqlite3.Connection) -> list[str]:
             self._extra(conn, user_id)
+            self._ensure_player(conn, user_id)
+            conn.execute(
+                "UPDATE potato_players SET enabled = 1 WHERE user_id = ?", (user_id,)
+            )
             conn.execute(
                 "UPDATE potato_extra SET started = started + 1 WHERE user_id = ?",
                 (user_id,),
@@ -293,6 +354,10 @@ class PotatoStore:
     async def record_purchase(self, user_id: int, item: str, stars: int) -> list[str]:
         def fn(conn: sqlite3.Connection) -> list[str]:
             self._extra(conn, user_id)
+            self._ensure_player(conn, user_id)
+            conn.execute(
+                "UPDATE potato_players SET enabled = 1 WHERE user_id = ?", (user_id,)
+            )
             conn.execute(
                 "UPDATE potato_extra SET bought = bought + 1 WHERE user_id = ?",
                 (user_id,),
@@ -490,7 +555,7 @@ class PotatoStore:
             if game.holder_id != from_user:
                 raise PotatoError("Картошка сейчас не у вас.")
             if game.expires_at is not None and now >= game.expires_at:
-                raise PotatoError("Поздно — картошка уже взорвалась! 💥")
+                raise PotatoError("Поздно — картошка уже сгнила! ☠️")
             if to_user == from_user:
                 raise PotatoError("Нельзя передать картошку самому себе.")
             if to_user is None and game.kind == "rot":

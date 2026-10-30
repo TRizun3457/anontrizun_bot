@@ -8,7 +8,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database as db
 from config import ADMIN_ID
-from potato.achievements import POTATO_ACHIEVEMENTS
+from potato.formatting import format_achievements, format_stats
 from potato.service import (
     GROUP_COOLDOWN_SECONDS,
     LAUNCH_PRICE,
@@ -18,7 +18,7 @@ from potato.service import (
 )
 from potato.store import MAX_DURATION, MIN_DURATION, PotatoError, random_duration
 
-from .helpers import send_or_edit
+from .helpers import pick_pet, send_or_edit
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -37,45 +37,10 @@ def pass_markup(game_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def format_stats(stats: dict, is_vip: bool, strong_left: int = 0) -> str:
-    lines = [
-        "🥔 <b>ГНИЛАЯ КАРТОШКА</b>",
-        "─────────────────────",
-        "🎮 Участие в игре: "
-        + ("<b>вы в игре</b>" if stats["enabled"] else "<b>вы вышли из игры</b>"),
-        f"📥 Получено картошек: <b>{stats['received']}</b>",
-        f"✅ Передано вовремя: <b>{stats['passed']}</b>",
-        f"💥 Взорвалось у вас: <b>{stats['exploded']}</b>",
-        f"🔥 Лучшая серия передач: <b>{stats['best_pass_streak']}</b>",
-        f"📣 Запусков картошки: <b>{stats['started']}</b>",
-    ]
-    if stats["fastest_pass_sec"] is not None:
-        lines.append(
-            f"⚡ Самая быстрая передача: <b>{stats['fastest_pass_sec']} с.</b>"
-        )
-    if strong_left > 0:
-        lines.append(
-            f"\n🌋 <b>Идёт СИЛЬНОЕ ГНИЕНИЕ</b> — ещё {fmt_duration(strong_left)}."
-        )
-    if not is_vip:
-        lines.append("\n💎 Настраивать, чем делиться, могут только VIP.")
-    return "\n".join(lines)
-
-
-def format_achievements(stats: dict) -> str:
-    unlocked = set(stats["achievements"])
-    lines = [
-        f"🏆 <b>ДОСТИЖЕНИЯ ИГРЫ ({len(unlocked)}/{len(POTATO_ACHIEVEMENTS)})</b>",
-        "─────────────────────",
-    ]
-    for ach_id, (title, desc) in POTATO_ACHIEVEMENTS.items():
-        mark = "✅" if ach_id in unlocked else "🔒"
-        lines.append(f"{mark} {title} — {desc}")
-    return "\n".join(lines)
-
-
-def _menu_kb(stats: dict, is_vip: bool) -> InlineKeyboardMarkup:
+def _menu_kb(stats: dict, is_vip: bool, locked: bool = False) -> InlineKeyboardMarkup:
     leave_label = "🚪 Выйти из игры" if stats["enabled"] else "▶️ Вернуться в игру"
+    if locked and stats["enabled"]:
+        leave_label = "🔒 Выйти нельзя (вы запустили игру)"
     share_label = "📲 Чем делиться (VIP)" if is_vip else "🔒 Чем делиться (только VIP)"
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -116,10 +81,27 @@ async def _show(
         return
     user_stats = await db.get_user_stats(event.from_user.id)
     stats = await service.store.get_stats(event.from_user.id)
+    lock = await service.store.leave_lock(event.from_user.id)
+    lock_note = ""
+    if lock is not None:
+        lock_note = (
+            "Вы запустили игру — выйти можно, когда она закончится."
+            if lock[0] == "game"
+            else f"Вы купили сильное гниение — выйти можно через {fmt_duration(lock[1])}."
+        )
+    pet = pick_pet(
+        user_stats.is_vip, user_stats.show_vip_cats, bool(stats["show_dogs"])
+    )
     await send_or_edit(
         event,
-        format_stats(stats, user_stats.is_vip, await service.strong_rot_remaining()),
-        _menu_kb(stats, user_stats.is_vip),
+        format_stats(
+            stats,
+            user_stats.is_vip,
+            await service.strong_rot_remaining(),
+            pet,
+            lock_note,
+        ),
+        _menu_kb(stats, user_stats.is_vip, lock is not None),
     )
 
 
@@ -146,7 +128,11 @@ async def potato_leave(
         return
     stats = await potato_service.store.get_stats(callback.from_user.id)
     now_enabled = not stats["enabled"]
-    await potato_service.store.set_enabled(callback.from_user.id, now_enabled)
+    try:
+        await potato_service.store.set_enabled(callback.from_user.id, now_enabled)
+    except PotatoError as exc:
+        await callback.answer(f"🔒 {exc}", show_alert=True)
+        return
     await callback.answer(
         "Вы снова в игре."
         if now_enabled
@@ -158,7 +144,7 @@ async def potato_leave(
 SHARE_LABELS = {
     "share_received": "📥 Получено",
     "share_passed": "✅ Отражено",
-    "share_exploded": "💥 Взорвалось",
+    "share_exploded": "☠️ Сгнило",
     "share_streak": "🔥 Серия",
     "share_achievements": "🏆 Достижения",
 }
@@ -370,7 +356,7 @@ async def potato_pay(
         return
     try:
         if item == "strong":
-            await potato_service.activate_strong_rot()
+            await potato_service.activate_strong_rot(user_id)
         else:
             await potato_service.launch_paid(user_id)
     except PotatoError as exc:
@@ -403,9 +389,10 @@ async def potato_achievements(
     if callback.from_user is None:
         return
     stats = await potato_service.store.get_stats(callback.from_user.id)
+    user_stats = await db.get_user_stats(callback.from_user.id)
     await send_or_edit(
         callback,
-        format_achievements(stats),
+        format_achievements(stats, user_stats.is_vip),
         InlineKeyboardMarkup(
             inline_keyboard=[
                 [
