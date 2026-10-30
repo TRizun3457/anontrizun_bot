@@ -3,12 +3,14 @@ import datetime
 import logging
 import random
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Protocol
 
 from .achievements import POTATO_ACHIEVEMENTS
 from .store import (
     ROT_DURATION,
     ROT_SPAWNS,
+    Assignment,
     ExplodeResult,
     Game,
     PassResult,
@@ -92,6 +94,13 @@ class PotatoService:
             try:
                 member = await self.bot.get_chat_member(group_chat_id, user_id)
             except Exception:
+                logger.warning(
+                    "potato: cannot verify membership for user %s in chat %s; "
+                    "make sure the bot is an administrator",
+                    user_id,
+                    group_chat_id,
+                    exc_info=True,
+                )
                 return False
             if getattr(member, "status", None) in ("left", "kicked"):
                 return False
@@ -117,7 +126,7 @@ class PotatoService:
             )
             return False
 
-    async def _notify_holder(self, game: Game) -> None:
+    async def _notify_holder(self, game: Game) -> bool:
         assert game.holder_id is not None
         if game.kind == "rot":
             text = (
@@ -132,7 +141,41 @@ class PotatoService:
                 f"У вас есть <b>{fmt_duration(game.duration_sec)}</b>, чтобы анонимно "
                 "передать её другому пользователю бота. Иначе она взорвётся! 💥"
             )
-        await self._say(game.holder_id, text, self._pass_markup(game.id))
+        return await self._say(game.holder_id, text, self._pass_markup(game.id))
+
+    async def _assign_and_notify(
+        self, game: Game, exclude: set[int]
+    ) -> Assignment | None:
+        group = game.chat_id if game.chat_id != game.starter_id else None
+        candidates = await self.store.candidates(game.id, exclude, self.admin_id)
+        for user_id in candidates[:MAX_DELIVERY_ATTEMPTS]:
+            if user_id in exclude or not await self._reachable(user_id, group):
+                continue
+            try:
+                assignment = await self.store.assign_holder(game.id, user_id)
+            except PotatoError as exc:
+                if str(exc) != "Пользователь больше не может участвовать в игре.":
+                    raise
+                logger.info(
+                    "potato: candidate %s became ineligible for game %s",
+                    user_id,
+                    game.id,
+                )
+                exclude.add(user_id)
+                continue
+            if await self._notify_holder(assignment.game):
+                return assignment
+
+            logger.warning(
+                "potato: holder notification failed for user %s in game %s; retrying",
+                user_id,
+                game.id,
+            )
+            await self.store.rollback_undelivered_holder(
+                game.id, user_id, assignment.new_achievements
+            )
+            exclude.add(user_id)
+        return None
 
     async def _announce_achievements(self, user_id: int, ids: list[str]) -> None:
         if ids:
@@ -159,18 +202,20 @@ class PotatoService:
                 )
         game = await self.store.create_game(chat_id, starter_id, duration_sec, kind)
         try:
-            victim = await self._pick_reachable(game, set())
-            if victim is None:
-                raise PotatoError("Некому передавать картошку: нет доступных игроков.")
-            assigned = await self.store.assign_holder(game.id, victim)
+            assigned = await self._assign_and_notify(game, set())
+            if assigned is None:
+                await self.store.cancel_game(game.id)
+                raise PotatoError(
+                    "Некому передавать картошку: не удалось найти доступного игрока."
+                )
             game = assigned.game
         except BaseException:
             await self.store.cancel_game(game.id)
             raise
         if mark_cooldown:
             await self.store.mark_started(chat_id)
-        await self._notify_holder(game)
-        await self._announce_achievements(victim, assigned.new_achievements)
+        assert game.holder_id is not None
+        await self._announce_achievements(game.holder_id, assigned.new_achievements)
         if announce and kind == "normal":
             await self._say(
                 chat_id,
@@ -273,8 +318,19 @@ class PotatoService:
             raise PotatoError("Эта картошка уже не активна.")
         if game.holder_id != user_id:
             raise PotatoError("Картошка сейчас не у вас.")
-        target = await self._pick_reachable(game, {user_id})
-        result = await self.store.pass_potato(game_id, user_id, target)
+        excluded = {user_id}
+        target = await self._pick_reachable(game, excluded)
+        while True:
+            try:
+                result = await self.store.pass_potato(game_id, user_id, target)
+                break
+            except PotatoError as exc:
+                if target is None or str(exc) != (
+                    "Получатель больше не может участвовать в игре."
+                ):
+                    raise
+                excluded.add(target)
+                target = await self._pick_reachable(game, excluded)
         if target is None:
             await self._say(
                 user_id,
@@ -283,9 +339,43 @@ class PotatoService:
             await self._say(
                 game.chat_id, "🥔 Картошку обезвредили: передавать её больше некому. 🎉"
             )
+        elif not await self._notify_holder(result.game):
+            await self.store.rollback_undelivered_holder(
+                game_id, target, result.receiver_achievements
+            )
+            replacement = await self._assign_and_notify(result.game, {user_id, target})
+            if replacement is None:
+                finished = await self.store.defuse_unheld_game(game_id)
+                result = replace(
+                    result,
+                    game=finished,
+                    new_holder=None,
+                    receiver_achievements=[],
+                )
+                await self._say(
+                    user_id,
+                    "✅ Передача засчитана, но уведомить других игроков не удалось. Игра завершена.",
+                )
+                await self._say(
+                    game.chat_id,
+                    "🥔 Картошку обезвредили: не удалось доставить её другим игрокам. 🎉",
+                )
+            else:
+                result = replace(
+                    result,
+                    game=replacement.game,
+                    new_holder=replacement.game.holder_id,
+                    receiver_achievements=replacement.new_achievements,
+                )
+                assert replacement.game.holder_id is not None
+                await self._announce_achievements(
+                    replacement.game.holder_id, replacement.new_achievements
+                )
         else:
-            await self._notify_holder(result.game)
-            await self._announce_achievements(target, result.receiver_achievements)
+            assert result.new_holder is not None
+            await self._announce_achievements(
+                result.new_holder, result.receiver_achievements
+            )
         await self._announce_achievements(user_id, result.new_achievements)
         return result
 

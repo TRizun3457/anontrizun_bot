@@ -287,3 +287,12 @@ def test_file_db_wal_roundtrip(tmp_path):
     g = run(store.create_game(-1, 1, 600))
     run(store.assign_holder(g.id, 1))
     assert run(store.get_stats(1))["received"] == 1
+
+
+def test_left_non_vip_cannot_receive_potato():
+    store, _ = make_store({1: 0, 2: 0})
+    run(store.set_enabled(1, False))
+    game = run(store.create_game(-1, 2, 600))
+    with pytest.raises(PotatoError):
+        run(store.assign_holder(game.id, 1))
+    assert run(store.candidates(game.id, set(), None)) == [2]
