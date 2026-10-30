@@ -1,4 +1,3 @@
--- Rotten Potato game. Idempotent: the Python store re-applies this file on start.
 CREATE TABLE IF NOT EXISTS potato_players (
     user_id INTEGER PRIMARY KEY,
     enabled INTEGER NOT NULL DEFAULT 1,

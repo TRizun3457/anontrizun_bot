@@ -66,7 +66,6 @@ def test_start_notifies_one_holder_and_announces():
     assert game.holder_id in (1, 2, 3)
     assert any("Вы — Гнилая картошка" in t for t in bot.to(game.holder_id))
     assert any("запущена" in t for t in bot.to(-5))
-    # anonymity: the group announcement does not contain the holder id
     assert str(game.holder_id) not in " ".join(bot.to(-5))
 
 
@@ -81,7 +80,7 @@ def test_start_skips_blocked_and_nonmembers():
 def test_admin_private_game_uses_global_pool_without_membership_check():
     bot = FakeBot(left={1, 2, 3})
     svc, bot, _ = make({1: 0, 2: 0, 3: 0}, bot)
-    g = run(svc.start_game(99, 99, 600))  # chat_id == starter_id -> private
+    g = run(svc.start_game(99, 99, 600))
     assert g.holder_id in (1, 2, 3)
 
 
@@ -90,7 +89,6 @@ def test_start_without_players_cleans_up():
     with pytest.raises(PotatoError):
         run(svc.start_game(-1, 99, 600))
     assert run(svc.store.active_game(-1)) is None
-    # chat can be reused after the failure
     svc2, _, _ = make({1: 0})
     run(svc2.start_game(-1, 99, 600))
 
@@ -103,7 +101,7 @@ def test_pass_moves_potato_and_notifies_new_holder_only():
     assert res.new_holder not in (None, first)
     assert any("Вы — Гнилая картошка" in t for t in bot.to(res.new_holder))
     with pytest.raises(PotatoError):
-        run(svc.pass_potato(g.id, first))  # no longer holder
+        run(svc.pass_potato(g.id, first))
 
 
 def test_pass_with_nobody_left_defuses():
@@ -127,7 +125,7 @@ def test_expiry_explodes_and_reports():
     assert [r.victim for r in out] == [holder]
     assert any("БАБАХ" in t for t in bot.to(holder))
     assert any("взорвалась" in t for t in bot.to(-1))
-    assert run(svc.resolve_expired()) == []  # idempotent
+    assert run(svc.resolve_expired()) == []
     stats = run(svc.store.get_stats(holder))
     assert stats["exploded"] == 1
 

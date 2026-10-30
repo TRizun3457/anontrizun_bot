@@ -26,3 +26,6 @@ module-name = "database"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"potato/service.py" = ["BLE001"]

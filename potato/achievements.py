@@ -1,5 +1,3 @@
-"""Game-local achievements for Rotten Potato (separate from the bot-wide ones)."""
-
 POTATO_ACHIEVEMENTS: dict[str, tuple[str, str]] = {
     "potato_first": ("🥔 Первая картошка", "Получить горячую картошку в первый раз"),
     "potato_pass_1": ("🤲 Вовремя!", "Успешно передать картошку 1 раз"),
@@ -13,7 +11,6 @@ POTATO_ACHIEVEMENTS: dict[str, tuple[str, str]] = {
     "potato_fast": ("🏎 Скорострел", "Передать картошку быстрее чем за 60 секунд"),
 }
 
-# (ach_id, predicate over a stats row)
 RULES = (
     ("potato_first", lambda s: s["received"] >= 1),
     ("potato_pass_1", lambda s: s["passed"] >= 1),

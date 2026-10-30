@@ -72,7 +72,7 @@ def test_single_active_game_per_chat():
 
 def test_candidates_exclude_banned_admin_and_optouts():
     store, _ = make_store({1: 0, 2: 0, 3: 1, 4: 1, 5: 0, 99: 0}, banned=(5,))
-    run(store.set_enabled(3, False))  # VIP opt-out works
+    run(store.set_enabled(3, False))
     game = run(store.create_game(-1, 99, 600))
     cands = run(store.candidates(game.id, set(), admin_id=99))
     assert sorted(cands) == [1, 2, 4]
@@ -118,12 +118,12 @@ def test_pass_validations():
     store, clock = make_store({1: 0, 2: 0, 3: 0})
     game = run(store.assign_holder(run(store.create_game(-1, 1, 600)).id, 2)).game
     with pytest.raises(PotatoError):
-        run(store.pass_potato(game.id, 3, 1))  # not the holder
+        run(store.pass_potato(game.id, 3, 1))
     with pytest.raises(PotatoError):
-        run(store.pass_potato(game.id, 2, 2))  # to self
+        run(store.pass_potato(game.id, 2, 2))
     clock.t += 601
     with pytest.raises(PotatoError):
-        run(store.pass_potato(game.id, 2, 3))  # too late
+        run(store.pass_potato(game.id, 2, 3))
     assert run(store.get_stats(2))["passed"] == 0
 
 
@@ -137,7 +137,6 @@ def test_double_resolution_impossible():
         run(store.pass_potato(game.id, 2, 1))
     s = run(store.get_stats(2))
     assert s["exploded"] == 1 and "potato_boom_1" in s["achievements"]
-    # chat is free again
     run(store.create_game(-1, 1, 600))
 
 
@@ -186,7 +185,6 @@ def test_history_prefers_fresh_players_then_falls_back():
     assert sorted(run(store.candidates(g.id, {1}, None))) == [2, 3]
     run(store.pass_potato(g.id, 1, 2))
     run(store.pass_potato(g.id, 2, 3))
-    # all seen: fallback to everyone except excluded holder
     assert sorted(run(store.candidates(g.id, {3}, None))) == [1, 2]
 
 

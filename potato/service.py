@@ -1,10 +1,3 @@
-"""Rotten Potato orchestration: picks victims, notifies them, resolves expiry.
-
-The Telegram bot is used through a tiny duck-typed surface (``send_message``,
-``send_chat_action``, ``get_chat_member``) so the logic is testable without
-aiogram. Identities of holders are never revealed in any message.
-"""
-
 import asyncio
 import logging
 from collections.abc import Callable
@@ -60,16 +53,15 @@ class PotatoService:
         self.admin_id = admin_id
         self._pass_markup = pass_markup or (lambda _game_id: None)
 
-    # ---- delivery -----------------------------------------------------
     async def _reachable(self, user_id: int, group_chat_id: int | None) -> bool:
         try:
             await self.bot.send_chat_action(user_id, "typing")
-        except Exception:  # noqa: BLE001 - any delivery failure means unreachable
+        except Exception:
             return False
         if group_chat_id is not None and group_chat_id < 0:
             try:
                 member = await self.bot.get_chat_member(group_chat_id, user_id)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return False
             if getattr(member, "status", None) in ("left", "kicked"):
                 return False
@@ -110,7 +102,6 @@ class PotatoService:
                 user_id, "🏆 <b>Новое достижение игры!</b>\n" + fmt_achievements(ids)
             )
 
-    # ---- lifecycle ----------------------------------------------------
     async def start_game(
         self, chat_id: int, starter_id: int, duration_sec: int
     ) -> Game:

@@ -1,11 +1,3 @@
-"""SQLite storage and game rules for Rotten Potato.
-
-Uses stdlib sqlite3 (run in a worker thread) on the same WAL database file as
-the Rust extension. Every mutating operation is a single BEGIN IMMEDIATE
-transaction, so concurrent button presses / expiry workers cannot double-resolve
-a potato.
-"""
-
 import asyncio
 import random
 import sqlite3
@@ -29,7 +21,7 @@ MAX_DURATION = 6 * 60 * 60
 
 
 class PotatoError(Exception):
-    """Business-rule failure with a user-presentable message."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -49,7 +41,7 @@ class Game:
 class PassResult:
     game: Game
     old_holder: int
-    new_holder: int | None  # None -> nobody left, potato defused
+    new_holder: int | None
     elapsed: int
     new_achievements: list[str]
     receiver_achievements: list[str]
@@ -109,7 +101,6 @@ class PotatoStore:
         if db_path == ":memory:":
             self._keep = self._open()
 
-    # ---- plumbing -----------------------------------------------------
     def _open(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
             self.db_path, timeout=10, isolation_level=None, check_same_thread=False
@@ -151,7 +142,6 @@ class PotatoStore:
             if self._keep is None:
                 conn.close()
 
-    # ---- players ------------------------------------------------------
     @staticmethod
     def _ensure_player(conn: sqlite3.Connection, user_id: int) -> None:
         conn.execute(
@@ -195,7 +185,6 @@ class PotatoStore:
         return await self._run(fn)
 
     async def set_enabled(self, user_id: int, enabled: bool) -> None:
-        """Opt in/out. Only VIP users may opt out; anyone may opt back in."""
 
         def fn(conn: sqlite3.Connection) -> None:
             if not enabled:
@@ -212,14 +201,12 @@ class PotatoStore:
 
         await self._run(fn)
 
-    # ---- candidate selection -----------------------------------------
     def _candidates(
         self,
         conn: sqlite3.Connection,
         exclude: set[int],
         admin_id: int | None,
     ) -> list[int]:
-        # Opt-out is honoured only while the user is still VIP.
         rows = conn.execute(
             """
             SELECT u.user_id FROM users u
@@ -237,8 +224,6 @@ class PotatoStore:
     async def candidates(
         self, game_id: int, extra_exclude: set[int], admin_id: int | None
     ) -> list[int]:
-        """Shuffled eligible users, previous holders of this game excluded
-        (they are only reused if nobody else is left)."""
 
         def fn(conn: sqlite3.Connection) -> list[int]:
             seen = {
@@ -257,7 +242,6 @@ class PotatoStore:
 
         return await self._run(fn)
 
-    # ---- game lifecycle ----------------------------------------------
     async def get_game(self, game_id: int) -> Game | None:
         def fn(conn: sqlite3.Connection) -> Game | None:
             return _game(
@@ -328,7 +312,6 @@ class PotatoStore:
         await self._run(fn)
 
     async def assign_holder(self, game_id: int, user_id: int) -> Assignment:
-        """Hand the potato to ``user_id`` and (re)start the timer."""
 
         def fn(conn: sqlite3.Connection) -> Assignment:
             now = self._now()
@@ -366,7 +349,6 @@ class PotatoStore:
     async def pass_potato(
         self, game_id: int, from_user: int, to_user: int | None
     ) -> PassResult:
-        """Holder passes the potato. ``to_user=None`` -> no one left, game ends safely."""
 
         def fn(conn: sqlite3.Connection) -> PassResult:
             now = self._now()
