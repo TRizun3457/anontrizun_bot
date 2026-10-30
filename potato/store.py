@@ -9,15 +9,15 @@ from typing import Any
 
 from .achievements import RULES
 
-MIGRATION = (
-    Path(__file__).resolve().parent.parent
-    / "database_rs"
-    / "migrations"
-    / "0002_potato.sql"
-)
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "database_rs" / "migrations"
+BASE_MIGRATION = MIGRATIONS_DIR / "0002_potato.sql"
+EVENTS_MIGRATION = MIGRATIONS_DIR / "0003_potato_events.sql"
+EVENTS_VERSION = 3
 
 MIN_DURATION = 10 * 60
 MAX_DURATION = 6 * 60 * 60
+ROT_DURATION = 60 * 60
+ROT_SPAWNS = 3
 
 
 class PotatoError(Exception):
@@ -35,6 +35,7 @@ class Game:
     expires_at: int | None
     pass_count: int
     duration_sec: int
+    kind: str = "normal"
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ def _game(row: sqlite3.Row | None) -> Game | None:
         row["expires_at"],
         row["pass_count"],
         row["duration_sec"],
+        row["kind"],
     )
 
 
@@ -134,13 +136,29 @@ class PotatoStore:
             return await asyncio.to_thread(self._run_sync, fn)
 
     async def init(self) -> None:
-        sql = MIGRATION.read_text(encoding="utf-8")
+        def apply(conn: sqlite3.Connection) -> None:
+            conn.executescript(BASE_MIGRATION.read_text(encoding="utf-8"))
+            has_marker = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'potato_schema'"
+            ).fetchone()
+            applied = (
+                has_marker
+                and conn.execute(
+                    "SELECT 1 FROM potato_schema WHERE version = ?", (EVENTS_VERSION,)
+                ).fetchone()
+            )
+            if not applied:
+                conn.executescript(EVENTS_MIGRATION.read_text(encoding="utf-8"))
+
         conn = self._keep or self._open()
         try:
-            conn.executescript(sql)
+            apply(conn)
         finally:
             if self._keep is None:
                 conn.close()
+
+    def now(self) -> int:
+        return self._now()
 
     @staticmethod
     def _ensure_player(conn: sqlite3.Connection, user_id: int) -> None:
@@ -185,18 +203,29 @@ class PotatoStore:
         return await self._run(fn)
 
     async def set_enabled(self, user_id: int, enabled: bool) -> None:
-
         def fn(conn: sqlite3.Connection) -> None:
-            if not enabled:
-                row = conn.execute(
-                    "SELECT is_vip FROM users WHERE user_id = ?", (user_id,)
-                ).fetchone()
-                if row is None or not row["is_vip"]:
-                    raise PotatoError("Скрыть игру могут только VIP-пользователи.")
             self._ensure_player(conn, user_id)
             conn.execute(
                 "UPDATE potato_players SET enabled = ? WHERE user_id = ?",
                 (1 if enabled else 0, user_id),
+            )
+
+        await self._run(fn)
+
+    async def set_hide_stats(self, user_id: int, hidden: bool) -> None:
+        def fn(conn: sqlite3.Connection) -> None:
+            if hidden:
+                row = conn.execute(
+                    "SELECT is_vip FROM users WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                if row is None or not row["is_vip"]:
+                    raise PotatoError(
+                        "Скрыть статистику могут только VIP-пользователи."
+                    )
+            self._ensure_player(conn, user_id)
+            conn.execute(
+                "UPDATE potato_players SET hide_stats = ? WHERE user_id = ?",
+                (1 if hidden else 0, user_id),
             )
 
         await self._run(fn)
@@ -212,7 +241,7 @@ class PotatoStore:
             SELECT u.user_id FROM users u
             LEFT JOIN potato_players p ON p.user_id = u.user_id
             WHERE u.user_id NOT IN (SELECT user_id FROM banned)
-              AND (COALESCE(p.enabled, 1) = 1 OR u.is_vip = 0)
+              AND COALESCE(p.enabled, 1) = 1
             """
         ).fetchall()
         return [
@@ -256,7 +285,7 @@ class PotatoStore:
         def fn(conn: sqlite3.Connection) -> Game | None:
             return _game(
                 conn.execute(
-                    "SELECT * FROM potato_games WHERE chat_id = ? AND status = 'active'",
+                    "SELECT * FROM potato_games WHERE chat_id = ? AND status = 'active' AND kind = 'normal'",
                     (chat_id,),
                 ).fetchone()
             )
@@ -276,21 +305,25 @@ class PotatoStore:
         return await self._run(fn)
 
     async def create_game(
-        self, chat_id: int, starter_id: int, duration_sec: int
+        self, chat_id: int, starter_id: int, duration_sec: int, kind: str = "normal"
     ) -> Game:
-        duration = clamp_duration(duration_sec)
+        duration = ROT_DURATION if kind == "rot" else clamp_duration(duration_sec)
 
         def fn(conn: sqlite3.Connection) -> Game:
-            exists = conn.execute(
-                "SELECT 1 FROM potato_games WHERE chat_id = ? AND status = 'active'",
-                (chat_id,),
-            ).fetchone()
+            exists = (
+                kind == "normal"
+                and conn.execute(
+                    "SELECT 1 FROM potato_games WHERE chat_id = ? AND status = 'active' AND kind = 'normal'",
+                    (chat_id,),
+                ).fetchone()
+            )
             if exists:
                 raise PotatoError("В этом чате уже идёт игра в картошку.")
             cur = conn.execute(
                 """INSERT INTO potato_games
-                   (chat_id, starter_id, duration_sec, created_at) VALUES (?, ?, ?, ?)""",
-                (chat_id, starter_id, duration, self._now()),
+                   (chat_id, starter_id, duration_sec, created_at, kind)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (chat_id, starter_id, duration, self._now(), kind),
             )
             game = _game(
                 conn.execute(
@@ -364,6 +397,10 @@ class PotatoStore:
                 raise PotatoError("Поздно — картошка уже взорвалась! 💥")
             if to_user == from_user:
                 raise PotatoError("Нельзя передать картошку самому себе.")
+            if to_user is None and game.kind == "rot":
+                raise PotatoError(
+                    "Сейчас некому передать картошку — попробуйте чуть позже."
+                )
 
             elapsed = max(0, now - (game.holder_since or now))
             self._ensure_player(conn, from_user)
@@ -434,9 +471,9 @@ class PotatoStore:
             victim = game.holder_id
             self._ensure_player(conn, victim)
             conn.execute(
-                """UPDATE potato_players SET exploded = exploded + 1, pass_streak = 0
-                   WHERE user_id = ?""",
-                (victim,),
+                """UPDATE potato_players SET exploded = exploded + 1, pass_streak = 0,
+                   rot_exploded = rot_exploded + ? WHERE user_id = ?""",
+                (1 if game.kind == "rot" else 0, victim),
             )
             granted = self._grant(conn, victim)
             conn.execute(
@@ -451,3 +488,106 @@ class PotatoStore:
             return ExplodeResult(done, victim, granted)
 
         return await self._run(fn)
+
+    async def cooldown_remaining(self, chat_id: int, cooldown_sec: int) -> int:
+        def fn(conn: sqlite3.Connection) -> int:
+            row = conn.execute(
+                "SELECT last_started FROM potato_chat_cooldown WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            if row is None:
+                return 0
+            return max(0, row["last_started"] + cooldown_sec - self._now())
+
+        return await self._run(fn)
+
+    async def mark_started(self, chat_id: int) -> None:
+        def fn(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """INSERT INTO potato_chat_cooldown (chat_id, last_started) VALUES (?, ?)
+                   ON CONFLICT(chat_id) DO UPDATE SET last_started = excluded.last_started""",
+                (chat_id, self._now()),
+            )
+
+        await self._run(fn)
+
+    async def get_auto(self, key: str) -> int | None:
+        def fn(conn: sqlite3.Connection) -> int | None:
+            row = conn.execute(
+                "SELECT next_at FROM potato_auto WHERE key = ?", (key,)
+            ).fetchone()
+            return None if row is None else row["next_at"]
+
+        return await self._run(fn)
+
+    async def set_auto(self, key: str, next_at: int) -> None:
+        def fn(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """INSERT INTO potato_auto (key, next_at) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET next_at = excluded.next_at""",
+                (key, next_at),
+            )
+
+        await self._run(fn)
+
+    async def plan_rot_day(
+        self,
+        day: str,
+        window_start: int,
+        window_end: int,
+        probability: float,
+        force: bool = False,
+    ) -> bool:
+        def fn(conn: sqlite3.Connection) -> bool:
+            row = conn.execute(
+                "SELECT is_rot FROM potato_rot_days WHERE day = ?", (day,)
+            ).fetchone()
+            if row is not None:
+                return bool(row["is_rot"])
+            start = max(window_start, self._now())
+            span = window_end - start
+            is_rot = span >= ROT_SPAWNS * 600 and (
+                force or self._rng.random() < probability
+            )
+            conn.execute(
+                "INSERT INTO potato_rot_days (day, is_rot) VALUES (?, ?)",
+                (day, 1 if is_rot else 0),
+            )
+            if is_rot:
+                times = sorted(self._rng.sample(range(start, window_end), ROT_SPAWNS))
+                for at in times:
+                    conn.execute(
+                        "INSERT INTO potato_rot_spawns (day, spawn_at) VALUES (?, ?)",
+                        (day, at),
+                    )
+            return is_rot
+
+        return await self._run(fn)
+
+    async def due_rot_spawns(self, max_age: int) -> list[tuple[str, int, bool]]:
+        def fn(conn: sqlite3.Connection) -> list[tuple[str, int, bool]]:
+            now = self._now()
+            conn.execute(
+                "UPDATE potato_rot_spawns SET launched = 2 WHERE launched = 0 AND spawn_at < ?",
+                (now - max_age,),
+            )
+            rows = conn.execute(
+                """SELECT day, spawn_at,
+                   (SELECT COUNT(*) FROM potato_rot_spawns s2
+                    WHERE s2.day = s.day AND s2.launched = 1) AS done
+                   FROM potato_rot_spawns s
+                   WHERE launched = 0 AND spawn_at <= ? ORDER BY spawn_at""",
+                (now,),
+            ).fetchall()
+            return [(r["day"], r["spawn_at"], r["done"] == 0) for r in rows]
+
+        return await self._run(fn)
+
+    async def mark_spawn_launched(self, day: str, spawn_at: int) -> None:
+        def fn(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE potato_rot_spawns SET launched = 1 WHERE day = ? AND spawn_at = ?",
+                (day, spawn_at),
+            )
+
+        await self._run(fn)

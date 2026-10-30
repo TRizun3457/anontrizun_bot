@@ -31,7 +31,7 @@ class FakeBot:
         return [t for c, t in self.sent if c == chat_id]
 
 
-def make(users, bot=None, banned=()):
+def make(users, bot=None, banned=(), **kw):
     clock = Clock()
     store = PotatoStore(":memory:", clock=clock, rng=random.Random(7))
     store._keep.executescript(INIT_SQL)
@@ -44,7 +44,9 @@ def make(users, bot=None, banned=()):
     asyncio.run(store.init())
     bot = bot or FakeBot()
     return (
-        PotatoService(store, bot, admin_id=99, pass_markup=lambda gid: f"kb{gid}"),
+        PotatoService(
+            store, bot, admin_id=99, pass_markup=lambda gid: f"kb{gid}", **kw
+        ),
         bot,
         clock,
     )
@@ -149,3 +151,128 @@ def test_expiry_loop_cancellable():
             await t
 
     run(go())
+
+
+def test_group_cooldown_blocks_second_start_but_not_after_4h():
+    svc, _, clock = make({1: 0, 2: 0})
+    g = run(svc.start_game(-1, 5, 600, cooldown_sec=4 * 3600, mark_cooldown=True))
+    run(svc.store.cancel_game(g.id))
+    with pytest.raises(PotatoError) as err:
+        run(svc.start_game(-1, 5, 600, cooldown_sec=4 * 3600, mark_cooldown=True))
+    assert "через" in str(err.value)
+    clock.t += 4 * 3600
+    run(svc.start_game(-1, 5, 600, cooldown_sec=4 * 3600, mark_cooldown=True))
+
+
+def test_failed_start_does_not_consume_cooldown():
+    svc, _, _ = make({99: 0})
+    with pytest.raises(PotatoError):
+        run(svc.start_game(-1, 5, 600, cooldown_sec=4 * 3600, mark_cooldown=True))
+    assert run(svc.store.cooldown_remaining(-1, 4 * 3600)) == 0
+
+
+def test_admin_start_ignores_cooldown():
+    svc, _, _ = make({1: 0})
+    run(svc.store.mark_started(-1))
+    run(svc.start_game(-1, 99, 600))
+
+
+def test_left_players_get_no_notifications():
+    svc, bot, _ = make({1: 0, 2: 0})
+    run(svc.store.set_enabled(1, False))
+    for chat in (-1, -2, -3):
+        g = run(svc.start_game(chat, 99, 600))
+        assert g.holder_id == 2
+    assert bot.to(1) == []
+
+
+def test_rot_day_launches_three_parallel_potatoes():
+    svc, bot, _ = make({1: 0, 2: 0, 3: 0, 4: 0})
+    games = run(svc.start_rot_day(-1, 99))
+    assert len(games) == 3 and all(g.kind == "rot" for g in games)
+    assert len({g.id for g in games}) == 3
+    assert any("ДЕНЬ ГНИЕНИЯ" in t for t in bot.to(-1))
+    run(svc.start_game(-1, 99, 600))
+
+
+def test_rot_potato_cannot_be_defused_and_keeps_timer():
+    svc, _bot, _clock = make({1: 0, 2: 0})
+    g = run(svc.start_rot_day(-1, 99))[0]
+    holder = g.holder_id
+    other = 2 if holder == 1 else 1
+    svc.bot.blocked.add(other)
+    with pytest.raises(PotatoError):
+        run(svc.pass_potato(g.id, holder))
+    assert run(svc.store.get_game(g.id)).holder_id == holder
+    svc.bot.blocked.discard(other)
+    res = run(svc.pass_potato(g.id, holder))
+    assert res.game.duration_sec == 3600 and res.new_holder == other
+
+
+def test_rot_potatoes_always_rot_someone():
+    svc, bot, clock = make({1: 0, 2: 0, 3: 0})
+    run(svc.start_rot_day(-1, 99))
+    clock.t += 3601
+    out = run(svc.resolve_expired())
+    assert len(out) == 3
+    assert any("дня гниения" in t for t in bot.to(-1))
+
+
+def local_noon_clock(svc):
+    day = svc._local(svc.store.now()).replace(hour=12, minute=0, second=0)
+    return int(day.timestamp())
+
+
+def test_tick_auto_starts_in_active_hours_only():
+    svc, _bot, clock = make({1: 0, 2: 0}, auto_chat_id=-7, utc_offset=0)
+    clock.t = 1_700_000_000 - (1_700_000_000 % 86400) + 3 * 3600
+    run(svc.store.set_auto("auto", int(clock.t) - 1))
+    run(svc.tick())
+    assert run(svc.store.active_game(-7)) is None
+    clock.t += 9 * 3600
+    run(svc.tick())
+    assert run(svc.store.active_game(-7)) is not None
+    nxt = run(svc.store.get_auto("auto"))
+    assert 4 * 3600 <= nxt - int(clock.t) <= 12 * 3600
+    assert run(svc.store.cooldown_remaining(-7, 4 * 3600)) > 0
+
+
+def test_tick_schedules_first_auto_and_retries_when_busy():
+    svc, _, clock = make({1: 0, 2: 0}, auto_chat_id=-7, utc_offset=0)
+    clock.t = 1_700_000_000 - (1_700_000_000 % 86400) + 12 * 3600
+    run(svc.tick())
+    first = run(svc.store.get_auto("auto"))
+    assert first is not None and first > clock.t
+    run(svc.start_game(-7, 99, 600))
+    run(svc.store.set_auto("auto", int(clock.t) - 1))
+    run(svc.tick())
+    assert run(svc.store.get_auto("auto")) == int(clock.t) + 3600
+
+
+def test_tick_launches_planned_rot_spawns():
+    svc, bot, clock = make({1: 0, 2: 0, 3: 0}, auto_chat_id=-7, utc_offset=0)
+    base = 1_700_000_000 - (1_700_000_000 % 86400)
+    clock.t = base + 10 * 3600 + 1
+    day = svc._local(int(clock.t)).date().isoformat()
+    run(svc.store.plan_rot_day(day, int(clock.t), base + 21 * 3600, 1.0))
+    run(svc.store.set_auto("auto", base + 10**7))
+    while clock.t < base + 21 * 3600:
+        run(svc.tick())
+        clock.t += 600
+    run(svc.tick())
+    games = [g for g in run(svc.store.active_games()) if g.kind == "rot"]
+    assert len(games) == 3
+    assert sum("ДЕНЬ ГНИЕНИЯ" in t for t in bot.to(-7)) == 1
+    run(svc.tick())
+    assert len([g for g in run(svc.store.active_games()) if g.kind == "rot"]) == 3
+
+
+def test_tick_skips_when_day_decided_not_rot():
+    svc, _, clock = make({1: 0, 2: 0}, auto_chat_id=-7, utc_offset=0)
+    base = 1_700_000_000 - (1_700_000_000 % 86400)
+    clock.t = base + 12 * 3600
+    day = svc._local(int(clock.t)).date().isoformat()
+    run(svc.store.plan_rot_day(day, base + 10 * 3600, base + 21 * 3600, 0.0))
+    run(svc.store.set_auto("auto", base + 10**7))
+    run(svc.tick())
+    assert run(svc.store.active_games()) == []

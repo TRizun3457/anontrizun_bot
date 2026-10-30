@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 
 import database as db
-from config import ADMIN_ID, BOT_TOKEN, DB_NAME
+from config import ADMIN_ID, ALLOWED_CHAT_ID, BOT_TOKEN, DB_NAME, POTATO_UTC_OFFSET
 from handlers import admin, payments, user
 from handlers.user.potato import pass_markup
 from middlewares.chat_check import AllowedChatMiddleware
@@ -27,12 +27,20 @@ async def main() -> None:
     potato_store = PotatoStore(DB_NAME)
     await potato_store.init()
     potato_service = PotatoService(
-        potato_store, bot, admin_id=ADMIN_ID, pass_markup=pass_markup
+        potato_store,
+        bot,
+        admin_id=ADMIN_ID,
+        pass_markup=pass_markup,
+        auto_chat_id=ALLOWED_CHAT_ID,
+        utc_offset=POTATO_UTC_OFFSET,
     )
     dp["potato_service"] = potato_service
-    potato_task = asyncio.create_task(
-        potato_service.run_expiry_loop(), name="potato-expiry"
-    )
+    potato_tasks = [
+        asyncio.create_task(potato_service.run_expiry_loop(), name="potato-expiry"),
+        asyncio.create_task(
+            potato_service.run_scheduler_loop(), name="potato-scheduler"
+        ),
+    ]
 
     throttling_middleware = ThrottlingMiddleware(
         command_limit=0.3,
@@ -66,9 +74,11 @@ async def main() -> None:
             polling_timeout=60,
         )
     finally:
-        potato_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await potato_task
+        for task in potato_tasks:
+            task.cancel()
+        for task in potato_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await bot.session.close()
         await db.close_db()
         logger.info("🛑 Бот успешно остановлен.")

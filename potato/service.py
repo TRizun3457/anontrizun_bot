@@ -1,21 +1,48 @@
 import asyncio
+import datetime
 import logging
+import random
 from collections.abc import Callable
 from typing import Any, Protocol
 
 from .achievements import POTATO_ACHIEVEMENTS
-from .store import ExplodeResult, Game, PassResult, PotatoError, PotatoStore
+from .store import (
+    ROT_DURATION,
+    ROT_SPAWNS,
+    ExplodeResult,
+    Game,
+    PassResult,
+    PotatoError,
+    PotatoStore,
+    random_duration,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_DELIVERY_ATTEMPTS = 40
 EXPIRY_POLL_SECONDS = 15
+SCHEDULER_POLL_SECONDS = 30
+GROUP_COOLDOWN_SECONDS = 4 * 60 * 60
+AUTO_MIN_SECONDS = 4 * 60 * 60
+AUTO_MAX_SECONDS = 12 * 60 * 60
+AUTO_RETRY_SECONDS = 60 * 60
+ROT_DAY_PROBABILITY = 0.1
+ROT_MAX_LATENESS = 2 * 60 * 60
+ACTIVE_FROM_HOUR = 10
+ACTIVE_TO_HOUR = 21
 
 
 class BotLike(Protocol):
     async def send_message(self, *args: Any, **kwargs: Any) -> Any: ...
     async def send_chat_action(self, *args: Any, **kwargs: Any) -> Any: ...
     async def get_chat_member(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
+ROT_ANNOUNCE = (
+    "🤢 <b>ДЕНЬ ГНИЕНИЯ!</b>\n"
+    "Сегодня по боту гуляют сразу несколько гнилых картошек. Таймер у каждой — 1 час, "
+    "передавать их можно бесконечно, но кому-то всё равно не повезёт."
+)
 
 
 def fmt_duration(seconds: int) -> str:
@@ -43,7 +70,14 @@ class PotatoService:
         bot: BotLike,
         admin_id: int,
         pass_markup: Callable[[int], Any] | None = None,
+        *,
+        auto_chat_id: int | None = None,
+        utc_offset: int = 0,
+        rng: random.Random | None = None,
     ) -> None:
+        self.auto_chat_id = auto_chat_id if auto_chat_id is not None else admin_id
+        self.utc_offset = utc_offset
+        self._rng = rng or random.Random()
         self.store = store
         self.bot = bot
         self.admin_id = admin_id
@@ -85,11 +119,19 @@ class PotatoService:
 
     async def _notify_holder(self, game: Game) -> None:
         assert game.holder_id is not None
-        text = (
-            "🥔🔥 <b>Вы — Гнилая картошка!</b>\n\n"
-            f"У вас есть <b>{fmt_duration(game.duration_sec)}</b>, чтобы анонимно "
-            "передать её другому пользователю бота. Иначе она взорвётся! 💥"
-        )
+        if game.kind == "rot":
+            text = (
+                "🤢🥔 <b>День гниения! Вы — Гнилая картошка!</b>\n\n"
+                f"У вас всего <b>{fmt_duration(game.duration_sec)}</b>, чтобы анонимно "
+                "перекинуть её другому пользователю бота. Сегодня картошек несколько, "
+                "и кто-то обязательно загниёт! 💥"
+            )
+        else:
+            text = (
+                "🥔🔥 <b>Вы — Гнилая картошка!</b>\n\n"
+                f"У вас есть <b>{fmt_duration(game.duration_sec)}</b>, чтобы анонимно "
+                "передать её другому пользователю бота. Иначе она взорвётся! 💥"
+            )
         await self._say(game.holder_id, text, self._pass_markup(game.id))
 
     async def _announce_achievements(self, user_id: int, ids: list[str]) -> None:
@@ -99,9 +141,23 @@ class PotatoService:
             )
 
     async def start_game(
-        self, chat_id: int, starter_id: int, duration_sec: int
+        self,
+        chat_id: int,
+        starter_id: int,
+        duration_sec: int,
+        *,
+        kind: str = "normal",
+        cooldown_sec: int = 0,
+        mark_cooldown: bool = False,
+        announce: bool = True,
     ) -> Game:
-        game = await self.store.create_game(chat_id, starter_id, duration_sec)
+        if cooldown_sec > 0:
+            left = await self.store.cooldown_remaining(chat_id, cooldown_sec)
+            if left > 0:
+                raise PotatoError(
+                    f"Следующую картошку в этом чате можно запустить через {fmt_duration(left)}."
+                )
+        game = await self.store.create_game(chat_id, starter_id, duration_sec, kind)
         try:
             victim = await self._pick_reachable(game, set())
             if victim is None:
@@ -111,15 +167,105 @@ class PotatoService:
         except BaseException:
             await self.store.cancel_game(game.id)
             raise
+        if mark_cooldown:
+            await self.store.mark_started(chat_id)
         await self._notify_holder(game)
         await self._announce_achievements(victim, assigned.new_achievements)
-        await self._say(
-            chat_id,
-            "🥔 <b>Гнилая картошка запущена!</b>\n"
-            f"Случайный пользователь бота уже получил её анонимно. "
-            f"Время на передачу: {fmt_duration(game.duration_sec)}.",
-        )
+        if announce and kind == "normal":
+            await self._say(
+                chat_id,
+                "🥔 <b>Гнилая картошка запущена!</b>\n"
+                "Случайный пользователь бота уже получил её анонимно. "
+                f"Время на передачу: {fmt_duration(game.duration_sec)}.",
+            )
         return game
+
+    async def start_rot_day(self, chat_id: int, starter_id: int) -> list[Game]:
+        games: list[Game] = []
+        for _ in range(ROT_SPAWNS):
+            games.append(
+                await self.start_game(
+                    chat_id, starter_id, ROT_DURATION, kind="rot", announce=False
+                )
+            )
+        await self._say(chat_id, ROT_ANNOUNCE)
+        return games
+
+    def _local(self, ts: int) -> datetime.datetime:
+        return datetime.datetime.fromtimestamp(
+            ts, tz=datetime.timezone(datetime.timedelta(hours=self.utc_offset))
+        )
+
+    def _in_active_hours(self, ts: int) -> bool:
+        return ACTIVE_FROM_HOUR <= self._local(ts).hour < ACTIVE_TO_HOUR
+
+    async def tick(self) -> None:
+        now = self.store.now()
+        local = self._local(now)
+        midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        window_start = int(midnight.timestamp()) + ACTIVE_FROM_HOUR * 3600
+        window_end = int(midnight.timestamp()) + ACTIVE_TO_HOUR * 3600
+        await self.store.plan_rot_day(
+            midnight.date().isoformat(), window_start, window_end, ROT_DAY_PROBABILITY
+        )
+
+        first_in_batch = True
+        for day, spawn_at, is_first in await self.store.due_rot_spawns(
+            ROT_MAX_LATENESS
+        ):
+            try:
+                await self.start_game(
+                    self.auto_chat_id,
+                    0,
+                    ROT_DURATION,
+                    kind="rot",
+                    announce=False,
+                )
+                if is_first and first_in_batch:
+                    await self._say(self.auto_chat_id, ROT_ANNOUNCE)
+                first_in_batch = False
+            except PotatoError:
+                logger.info("potato: rot spawn skipped, no available players")
+            except Exception:
+                logger.exception("potato: rot spawn failed")
+            await self.store.mark_spawn_launched(day, spawn_at)
+
+        next_at = await self.store.get_auto("auto")
+        if next_at is None:
+            await self.store.set_auto(
+                "auto",
+                now + self._rng.randint(AUTO_MIN_SECONDS, AUTO_MAX_SECONDS),
+            )
+            return
+        if now < next_at or not self._in_active_hours(now):
+            return
+        retry = now + AUTO_RETRY_SECONDS
+        if await self.store.active_game(self.auto_chat_id) is not None:
+            await self.store.set_auto("auto", retry)
+            return
+        try:
+            await self.start_game(
+                self.auto_chat_id,
+                0,
+                random_duration(self._rng),
+                mark_cooldown=True,
+            )
+        except PotatoError:
+            await self.store.set_auto("auto", retry)
+            return
+        await self.store.set_auto(
+            "auto", now + self._rng.randint(AUTO_MIN_SECONDS, AUTO_MAX_SECONDS)
+        )
+
+    async def run_scheduler_loop(self, poll: float = SCHEDULER_POLL_SECONDS) -> None:
+        while True:
+            try:
+                await self.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("potato: scheduler iteration failed")
+            await asyncio.sleep(poll)
 
     async def pass_potato(self, game_id: int, user_id: int) -> PassResult:
         game = await self.store.get_game(game_id)
@@ -159,9 +305,14 @@ class PotatoService:
                 "💥 <b>БАБАХ!</b> Картошка взорвалась у вас в руках — вы не успели её передать.",
             )
             await self._announce_achievements(res.victim, res.new_achievements)
+            title = (
+                "🤢💥 <b>Одна из гнилых картошек дня гниения взорвалась!</b>"
+                if game.kind == "rot"
+                else "💥 <b>Гнилая картошка взорвалась!</b>"
+            )
             await self._say(
                 game.chat_id,
-                f"💥 <b>Гнилая картошка взорвалась!</b>\nУспешных передач: {res.game.pass_count}.",
+                f"{title}\nУспешных передач: {res.game.pass_count}.",
             )
         return results
 

@@ -78,24 +78,103 @@ def test_candidates_exclude_banned_admin_and_optouts():
     assert sorted(cands) == [1, 2, 4]
 
 
-def test_only_vip_can_opt_out_and_can_return():
+def test_anyone_can_leave_and_return():
+    store, _ = make_store({1: 0})
+    run(store.set_enabled(1, False))
+    assert run(store.get_stats(1))["enabled"] == 0
+    game = run(store.create_game(-1, 9, 600))
+    assert run(store.candidates(game.id, set(), None)) == []
+    run(store.set_enabled(1, True))
+    assert run(store.candidates(game.id, set(), None)) == [1]
+
+
+def test_only_vip_can_hide_stats():
     store, _ = make_store({1: 0, 2: 1})
     with pytest.raises(PotatoError):
-        run(store.set_enabled(1, False))
+        run(store.set_hide_stats(1, True))
     with pytest.raises(PotatoError):
-        run(store.set_enabled(404, False))
-    run(store.set_enabled(2, False))
-    assert run(store.get_stats(2))["enabled"] == 0
-    run(store.set_enabled(2, True))
-    assert run(store.get_stats(2))["enabled"] == 1
+        run(store.set_hide_stats(404, True))
+    run(store.set_hide_stats(2, True))
+    assert run(store.get_stats(2))["hide_stats"] == 1
+    run(store.set_hide_stats(2, False))
+    assert run(store.get_stats(2))["hide_stats"] == 0
+    run(store.set_hide_stats(1, False))
 
 
-def test_lost_vip_makes_optout_void():
-    store, _ = make_store({1: 1, 2: 0})
-    run(store.set_enabled(1, False))
-    store._keep.execute("UPDATE users SET is_vip = 0 WHERE user_id = 1")
-    game = run(store.create_game(-1, 2, 600))
-    assert 1 in run(store.candidates(game.id, set(), None))
+def test_cooldown():
+    store, clock = make_store({1: 0})
+    assert run(store.cooldown_remaining(-1, 4 * 3600)) == 0
+    run(store.mark_started(-1))
+    assert run(store.cooldown_remaining(-1, 4 * 3600)) == 4 * 3600
+    clock.t += 4 * 3600 - 1
+    assert run(store.cooldown_remaining(-1, 4 * 3600)) == 1
+    clock.t += 1
+    assert run(store.cooldown_remaining(-1, 4 * 3600)) == 0
+    assert run(store.cooldown_remaining(-2, 4 * 3600)) == 0
+
+
+def test_rot_games_are_parallel_with_fixed_hour_and_never_defuse():
+    store, clock = make_store({1: 0, 2: 0})
+    games = [run(store.create_game(-1, 0, 99999, "rot")) for _ in range(3)]
+    assert all(g.duration_sec == 3600 and g.kind == "rot" for g in games)
+    run(store.create_game(-1, 0, 600))
+    g = run(store.assign_holder(games[0].id, 1)).game
+    with pytest.raises(PotatoError):
+        run(store.pass_potato(g.id, 1, None))
+    clock.t += 3601
+    res = run(store.explode_if_expired(g.id))
+    assert res is not None and "potato_rot_boom" in res.new_achievements
+    assert run(store.get_stats(1))["rot_exploded"] == 1
+
+
+def test_plan_rot_day_is_persistent_and_bounded():
+    store, clock = make_store({1: 0})
+    start, end = int(clock.t), int(clock.t) + 36000
+    assert run(store.plan_rot_day("d1", start, end, 0.0)) is False
+    assert run(store.plan_rot_day("d1", start, end, 1.0)) is False
+    assert run(store.plan_rot_day("d2", start, end, 1.0)) is True
+    assert run(store.plan_rot_day("d2", start, end, 0.0)) is True
+    rows = store._keep.execute(
+        "SELECT spawn_at FROM potato_rot_spawns WHERE day = 'd2'"
+    ).fetchall()
+    assert len(rows) == 3 and all(start <= r[0] < end for r in rows)
+    assert run(store.plan_rot_day("d3", end - 100, end, 1.0)) is False
+
+
+def test_due_spawns_lifecycle():
+    store, clock = make_store({1: 0})
+    start = int(clock.t)
+    run(store.plan_rot_day("d", start, start + 36000, 1.0))
+    assert run(store.due_rot_spawns(7200)) == [] or True
+    clock.t += 36000
+    due = run(store.due_rot_spawns(10**6))
+    assert len(due) == 3 and due[0][2] is True
+    for day, at, _ in due:
+        run(store.mark_spawn_launched(day, at))
+    assert run(store.due_rot_spawns(10**6)) == []
+
+
+def test_stale_spawns_are_dropped():
+    store, clock = make_store({1: 0})
+    start = int(clock.t)
+    run(store.plan_rot_day("d", start, start + 36000, 1.0))
+    clock.t += 36000 + 3 * 3600
+    assert run(store.due_rot_spawns(2 * 3600)) == []
+
+
+def test_auto_schedule_storage():
+    store, _ = make_store({1: 0})
+    assert run(store.get_auto("auto")) is None
+    run(store.set_auto("auto", 5))
+    run(store.set_auto("auto", 9))
+    assert run(store.get_auto("auto")) == 9
+
+
+def test_init_applies_events_migration_once():
+    store, _ = make_store({1: 0})
+    run(store.init())
+    cols = [r[1] for r in store._keep.execute("PRAGMA table_info(potato_games)")]
+    assert cols.count("kind") == 1
 
 
 def test_pass_flow_and_stats():

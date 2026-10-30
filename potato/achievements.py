@@ -9,6 +9,10 @@ POTATO_ACHIEVEMENTS: dict[str, tuple[str, str]] = {
     "potato_boom_1": ("💥 Бабах!", "Взорваться с картошкой в первый раз"),
     "potato_boom_5": ("🧨 Любитель фейерверков", "Взорваться 5 раз"),
     "potato_fast": ("🏎 Скорострел", "Передать картошку быстрее чем за 60 секунд"),
+    "potato_rot_boom": (
+        "🤢 Жертва дня гниения",
+        "Взорваться с картошкой в день гниения",
+    ),
 }
 
 RULES = (
@@ -18,6 +22,7 @@ RULES = (
     ("potato_streak_3", lambda s: s["best_pass_streak"] >= 3),
     ("potato_boom_1", lambda s: s["exploded"] >= 1),
     ("potato_boom_5", lambda s: s["exploded"] >= 5),
+    ("potato_rot_boom", lambda s: s["rot_exploded"] >= 1),
     (
         "potato_fast",
         lambda s: s["fastest_pass_sec"] is not None and s["fastest_pass_sec"] < 60,
