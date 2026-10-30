@@ -1,5 +1,3 @@
-import random
-
 from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.types import (
@@ -9,9 +7,9 @@ from aiogram.types import (
 
 import database as db
 from achievements import ACHIEVEMENTS
+from potato.service import PotatoService
 
-from .constants import CAT_KAOMOJI_LIST
-from .helpers import send_or_edit
+from .helpers import pick_pet, send_or_edit
 from .keyboards import get_profile_actions_keyboard
 
 router = Router()
@@ -19,7 +17,9 @@ router = Router()
 
 @router.message(Command("status"), F.chat.type == "private")
 @router.callback_query(F.data == "my_status")
-async def show_status(event: types.Message | types.CallbackQuery) -> None:
+async def show_status(
+    event: types.Message | types.CallbackQuery, potato_service: PotatoService
+) -> None:
     if event.from_user is None:
         return
 
@@ -27,8 +27,9 @@ async def show_status(event: types.Message | types.CallbackQuery) -> None:
     user_stats = await db.register_user(user_id)
     banned = await db.is_banned(user_id)
 
-    use_cats = user_stats.is_vip and user_stats.show_vip_cats
-    cat_str = f" {random.choice(CAT_KAOMOJI_LIST).strip()} " if use_cats else ""
+    show_dogs = bool((await potato_service.store.get_stats(user_id))["show_dogs"])
+    pet = pick_pet(user_stats.is_vip, user_stats.show_vip_cats, show_dogs)
+    cat_str = f" {pet} " if pet else ""
 
     code_spoiler = f"<tg-spoiler><code>{user_stats.anon_code}</code></tg-spoiler>"
     status_text = "🚫 Заблокирован" if banned else "✅ Активен"

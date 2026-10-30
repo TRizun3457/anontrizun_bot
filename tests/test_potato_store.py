@@ -8,6 +8,7 @@ import pytest
 from potato.store import (
     MAX_DURATION,
     MIN_DURATION,
+    SHARE_FIELDS,
     PotatoError,
     PotatoStore,
     clamp_duration,
@@ -88,17 +89,61 @@ def test_anyone_can_leave_and_return():
     assert run(store.candidates(game.id, set(), None)) == [1]
 
 
-def test_only_vip_can_hide_stats():
+def test_vip_share_settings():
     store, _ = make_store({1: 0, 2: 1})
     with pytest.raises(PotatoError):
-        run(store.set_hide_stats(1, True))
+        run(store.set_share(1, "share_passed", False))
     with pytest.raises(PotatoError):
-        run(store.set_hide_stats(404, True))
-    run(store.set_hide_stats(2, True))
-    assert run(store.get_stats(2))["hide_stats"] == 1
-    run(store.set_hide_stats(2, False))
-    assert run(store.get_stats(2))["hide_stats"] == 0
-    run(store.set_hide_stats(1, False))
+        run(store.set_share(404, "share_passed", False))
+    with pytest.raises(PotatoError):
+        run(store.set_share(2, "bogus", False))
+    run(store.set_share(2, "share_passed", False))
+    assert run(store.get_stats(2))["share_passed"] == 0
+    run(store.set_share(2, "share_passed", True))
+    assert run(store.get_stats(2))["share_passed"] == 1
+
+
+def test_share_keeps_at_least_one_field():
+    store, _ = make_store({2: 1})
+    for field in SHARE_FIELDS[:-1]:
+        run(store.set_share(2, field, False))
+    with pytest.raises(PotatoError):
+        run(store.set_share(2, SHARE_FIELDS[-1], False))
+
+
+def test_dogs_toggle_default_on():
+    store, _ = make_store({1: 0})
+    assert run(store.get_stats(1))["show_dogs"] == 1
+    run(store.set_dogs(1, False))
+    assert run(store.get_stats(1))["show_dogs"] == 0
+
+
+def test_started_and_purchase_achievements():
+    store, _ = make_store({1: 0})
+    got = []
+    for _ in range(10):
+        got += run(store.record_start(1))
+    assert got.count("potato_start_10") == 1
+    assert "potato_donor" in run(store.record_purchase(1, "launch", 30))
+    assert run(store.get_stats(1))["bought"] == 1
+
+
+def test_pass_100_achievement():
+    store, _ = make_store({1: 0, 2: 0})
+    store._keep.execute("INSERT INTO potato_players (user_id, passed) VALUES (2, 99)")
+    g = run(store.assign_holder(run(store.create_game(-1, 1, 600)).id, 2)).game
+    res = run(store.pass_potato(g.id, 2, 1))
+    assert "potato_pass_100" in res.new_achievements
+    assert "potato_pass_50" in run(store.get_stats(2))["achievements"]
+
+
+def test_active_holders_and_eligible_users():
+    store, _ = make_store({1: 0, 2: 0, 99: 0})
+    g = run(store.assign_holder(run(store.create_game(-1, 99, 600)).id, 2)).game
+    assert run(store.active_holders()) == {2}
+    assert sorted(run(store.eligible_users(99))) == [1, 2]
+    run(store.cancel_game(g.id))
+    assert run(store.active_holders()) == set()
 
 
 def test_cooldown():

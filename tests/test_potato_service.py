@@ -379,3 +379,83 @@ def test_pass_defuses_game_if_all_replacement_dms_fail():
     assert result.game.status == "defused"
     assert run(svc.store.active_game(-55)) is None
     assert run(svc.store.get_stats(target))["received"] == 0
+
+
+def test_strong_rot_activation_extends_and_announces():
+    svc, bot, clock = make({1: 0})
+    first = run(svc.activate_strong_rot())
+    assert first == int(clock.t) + 7 * 3600
+    second = run(svc.activate_strong_rot())
+    assert second == first + 7 * 3600
+    assert any("СИЛЬНОЕ ГНИЕНИЕ" in t for _, t in bot.sent)
+    assert run(svc.strong_rot_remaining()) == 14 * 3600
+
+
+def test_strong_rot_spawns_only_while_active_and_respects_roll_interval():
+    svc, _bot, clock = make({1: 0, 2: 0, 3: 0})
+    svc.strong_chance = 1.0
+    run(svc.store.set_auto("auto", int(clock.t) + 10**7))
+    run(svc.tick())
+    assert run(svc.store.active_games()) == []
+    run(svc.activate_strong_rot())
+    run(svc.tick())
+    games = run(svc.store.active_games())
+    assert len(games) == 3
+    assert {g.kind for g in games} == {"rot"}
+    assert {g.duration_sec for g in games} == {3600}
+    assert len({g.holder_id for g in games}) == 3
+    run(svc.tick())
+    assert len(run(svc.store.active_games())) == 3
+    clock.t += 3 * 3600
+    for g in run(svc.store.active_games()):
+        run(svc.store.cancel_game(g.id))
+    run(svc.store.set_auto("auto", int(clock.t) + 10**7))
+    run(svc.tick())
+    assert len(run(svc.store.active_games())) == 3
+
+
+def test_strong_rot_zero_chance_spawns_nothing_and_skips_holders():
+    svc, _, clock = make({1: 0, 2: 0})
+    svc.strong_chance = 0.0
+    run(svc.store.set_auto("auto", int(clock.t) + 10**7))
+    run(svc.activate_strong_rot())
+    run(svc.tick())
+    assert run(svc.store.active_games()) == []
+    svc.strong_chance = 1.0
+    g = run(svc.start_game(-1, 99, 600))
+    assert run(svc._strong_rot_roll()) == 1
+    holders = {x.holder_id for x in run(svc.store.active_games())}
+    assert len(holders) == 2 and g.holder_id in holders
+
+
+def test_strong_rot_skips_unreachable_users():
+    bot = FakeBot(blocked=frozenset({1}))
+    svc, bot, _clock = make({1: 0, 2: 0}, bot)
+    svc.strong_chance = 1.0
+    assert run(svc._strong_rot_roll()) == 1
+    assert [g.holder_id for g in run(svc.store.active_games())] == [2]
+
+
+def test_paid_launch_creates_rot_potato_and_counts_start():
+    svc, bot, _ = make({1: 0, 2: 0})
+    game = run(svc.launch_paid(2))
+    assert game.kind == "rot" and game.duration_sec == 3600
+    assert run(svc.store.get_stats(2))["started"] == 1
+    assert any("запустил гнилую картошку" in t for _, t in bot.sent)
+    second = run(svc.launch_paid(2))
+    assert second.id != game.id
+
+
+def test_manual_start_counts_and_awards_start_achievement():
+    svc, bot, _clock = make({1: 0})
+    for i in range(10):
+        run(svc.start_game(-100 - i, 5, 600))
+    assert run(svc.store.get_stats(5))["started"] == 10
+    assert "potato_start_10" in run(svc.store.get_stats(5))["achievements"]
+    assert any("Заводила" in t for t in bot.to(5))
+
+
+def test_record_purchase_announces_achievement():
+    svc, bot, _ = make({1: 0})
+    run(svc.record_purchase(1, "launch", 30))
+    assert any("Друг гниения" in t for t in bot.to(1))

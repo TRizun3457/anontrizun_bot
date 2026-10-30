@@ -13,6 +13,14 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "database_rs" / "migra
 BASE_MIGRATION = MIGRATIONS_DIR / "0002_potato.sql"
 EVENTS_MIGRATION = MIGRATIONS_DIR / "0003_potato_events.sql"
 EVENTS_VERSION = 3
+EXTRAS_MIGRATION = MIGRATIONS_DIR / "0004_potato_extras.sql"
+SHARE_FIELDS = (
+    "share_received",
+    "share_passed",
+    "share_exploded",
+    "share_streak",
+    "share_achievements",
+)
 
 MIN_DURATION = 10 * 60
 MAX_DURATION = 6 * 60 * 60
@@ -149,6 +157,7 @@ class PotatoStore:
             )
             if not applied:
                 conn.executescript(EVENTS_MIGRATION.read_text(encoding="utf-8"))
+            conn.executescript(EXTRAS_MIGRATION.read_text(encoding="utf-8"))
 
         conn = self._keep or self._open()
         try:
@@ -174,6 +183,15 @@ class PotatoStore:
         ).fetchone()
 
     @staticmethod
+    def _extra(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row:
+        conn.execute(
+            "INSERT OR IGNORE INTO potato_extra (user_id) VALUES (?)", (user_id,)
+        )
+        return conn.execute(
+            "SELECT * FROM potato_extra WHERE user_id = ?", (user_id,)
+        ).fetchone()
+
+    @staticmethod
     def _is_eligible(conn: sqlite3.Connection, user_id: int) -> bool:
         row = conn.execute(
             """
@@ -191,6 +209,7 @@ class PotatoStore:
     @staticmethod
     def _grant(conn: sqlite3.Connection, user_id: int) -> list[str]:
         stats = dict(PotatoStore._player(conn, user_id))
+        stats.update(dict(PotatoStore._extra(conn, user_id)))
         granted: list[str] = []
         for ach_id, pred in RULES:
             if not pred(stats):
@@ -206,6 +225,7 @@ class PotatoStore:
     async def get_stats(self, user_id: int) -> dict[str, Any]:
         def fn(conn: sqlite3.Connection) -> dict[str, Any]:
             data = dict(self._player(conn, user_id))
+            data.update(dict(self._extra(conn, user_id)))
             data["achievements"] = [
                 r["ach_id"]
                 for r in conn.execute(
@@ -227,23 +247,80 @@ class PotatoStore:
 
         await self._run(fn)
 
-    async def set_hide_stats(self, user_id: int, hidden: bool) -> None:
+    async def set_dogs(self, user_id: int, shown: bool) -> None:
         def fn(conn: sqlite3.Connection) -> None:
-            if hidden:
-                row = conn.execute(
-                    "SELECT is_vip FROM users WHERE user_id = ?", (user_id,)
-                ).fetchone()
-                if row is None or not row["is_vip"]:
-                    raise PotatoError(
-                        "Скрыть статистику могут только VIP-пользователи."
-                    )
-            self._ensure_player(conn, user_id)
+            self._extra(conn, user_id)
             conn.execute(
-                "UPDATE potato_players SET hide_stats = ? WHERE user_id = ?",
-                (1 if hidden else 0, user_id),
+                "UPDATE potato_extra SET show_dogs = ? WHERE user_id = ?",
+                (1 if shown else 0, user_id),
             )
 
         await self._run(fn)
+
+    async def set_share(self, user_id: int, field: str, shown: bool) -> None:
+        if field not in SHARE_FIELDS:
+            raise PotatoError("Неизвестный параметр.")
+
+        def fn(conn: sqlite3.Connection) -> None:
+            row = conn.execute(
+                "SELECT is_vip FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if row is None or not row["is_vip"]:
+                raise PotatoError(
+                    "Настраивать, чем делиться, могут только VIP-пользователи."
+                )
+            extra = self._extra(conn, user_id)
+            if not shown and sum(extra[f] for f in SHARE_FIELDS if f != field) == 0:
+                raise PotatoError("Хотя бы один показатель должен остаться включён.")
+            conn.execute(
+                f"UPDATE potato_extra SET {field} = ? WHERE user_id = ?",
+                (1 if shown else 0, user_id),
+            )
+
+        await self._run(fn)
+
+    async def record_start(self, user_id: int) -> list[str]:
+        def fn(conn: sqlite3.Connection) -> list[str]:
+            self._extra(conn, user_id)
+            conn.execute(
+                "UPDATE potato_extra SET started = started + 1 WHERE user_id = ?",
+                (user_id,),
+            )
+            return self._grant(conn, user_id)
+
+        return await self._run(fn)
+
+    async def record_purchase(self, user_id: int, item: str, stars: int) -> list[str]:
+        def fn(conn: sqlite3.Connection) -> list[str]:
+            self._extra(conn, user_id)
+            conn.execute(
+                "UPDATE potato_extra SET bought = bought + 1 WHERE user_id = ?",
+                (user_id,),
+            )
+            conn.execute(
+                "INSERT INTO potato_purchases (user_id, item, stars, created_at) VALUES (?, ?, ?, ?)",
+                (user_id, item, stars, self._now()),
+            )
+            return self._grant(conn, user_id)
+
+        return await self._run(fn)
+
+    async def eligible_users(self, admin_id: int | None) -> list[int]:
+        def fn(conn: sqlite3.Connection) -> list[int]:
+            return self._candidates(conn, set(), admin_id)
+
+        return await self._run(fn)
+
+    async def active_holders(self) -> set[int]:
+        def fn(conn: sqlite3.Connection) -> set[int]:
+            return {
+                r["holder_id"]
+                for r in conn.execute(
+                    "SELECT holder_id FROM potato_games WHERE status = 'active' AND holder_id IS NOT NULL"
+                )
+            }
+
+        return await self._run(fn)
 
     def _candidates(
         self,

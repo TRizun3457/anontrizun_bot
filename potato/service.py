@@ -29,6 +29,16 @@ AUTO_MIN_SECONDS = 4 * 60 * 60
 AUTO_MAX_SECONDS = 12 * 60 * 60
 AUTO_RETRY_SECONDS = 60 * 60
 ROT_DAY_PROBABILITY = 0.1
+STRONG_ROT_PRICE = 142
+LAUNCH_PRICE = 30
+STRONG_ROT_SECONDS = 7 * 60 * 60
+STRONG_ROT_CHANCE = 6.7 / 4267
+STRONG_ROLL_SECONDS = 10 * 60
+STRONG_ANNOUNCE = (
+    "🌋 <b>СИЛЬНОЕ ГНИЕНИЕ!</b>\n"
+    "Ближайшие 7 часов гнилые картошки могут внезапно появляться у случайных "
+    "пользователей бота. На передачу — час, как в день гниения. Берегитесь! 🥔💀"
+)
 ROT_MAX_LATENESS = 2 * 60 * 60
 ACTIVE_FROM_HOUR = 10
 ACTIVE_TO_HOUR = 21
@@ -83,6 +93,7 @@ class PotatoService:
         self.store = store
         self.bot = bot
         self.admin_id = admin_id
+        self.strong_chance = STRONG_ROT_CHANCE
         self._pass_markup = pass_markup or (lambda _game_id: None)
 
     async def _reachable(self, user_id: int, group_chat_id: int | None) -> bool:
@@ -216,6 +227,10 @@ class PotatoService:
             await self.store.mark_started(chat_id)
         assert game.holder_id is not None
         await self._announce_achievements(game.holder_id, assigned.new_achievements)
+        if starter_id > 0:
+            await self._announce_achievements(
+                starter_id, await self.store.record_start(starter_id)
+            )
         if announce and kind == "normal":
             await self._say(
                 chat_id,
@@ -224,6 +239,68 @@ class PotatoService:
                 f"Время на передачу: {fmt_duration(game.duration_sec)}.",
             )
         return game
+
+    async def strong_rot_remaining(self) -> int:
+        until = await self.store.get_auto("strong_until")
+        if until is None:
+            return 0
+        return max(0, until - self.store.now())
+
+    async def activate_strong_rot(self) -> int:
+        now = self.store.now()
+        current = await self.store.get_auto("strong_until") or 0
+        until = max(current, now) + STRONG_ROT_SECONDS
+        await self.store.set_auto("strong_until", until)
+        await self._say(self.auto_chat_id, STRONG_ANNOUNCE)
+        return until
+
+    async def launch_paid(self, buyer_id: int) -> Game:
+        game = await self.start_game(
+            self.auto_chat_id, buyer_id, ROT_DURATION, kind="rot", announce=False
+        )
+        await self._say(
+            self.auto_chat_id,
+            "🥔💀 <b>Кто-то запустил гнилую картошку!</b>\n"
+            f"Она уже у случайного пользователя. Время на передачу: {fmt_duration(ROT_DURATION)}.",
+        )
+        return game
+
+    async def record_purchase(self, user_id: int, item: str, stars: int) -> None:
+        await self._announce_achievements(
+            user_id, await self.store.record_purchase(user_id, item, stars)
+        )
+
+    async def _spawn_rot_for(self, user_id: int) -> bool:
+        game = await self.store.create_game(self.auto_chat_id, 0, ROT_DURATION, "rot")
+        group = self.auto_chat_id if self.auto_chat_id < 0 else None
+        try:
+            if not await self._reachable(user_id, group):
+                raise PotatoError("unreachable")
+            assigned = await self.store.assign_holder(game.id, user_id)
+            if not await self._notify_holder(assigned.game):
+                await self.store.rollback_undelivered_holder(
+                    game.id, user_id, assigned.new_achievements
+                )
+                raise PotatoError("undeliverable")
+        except PotatoError:
+            await self.store.cancel_game(game.id)
+            return False
+        except BaseException:
+            await self.store.cancel_game(game.id)
+            raise
+        await self._announce_achievements(user_id, assigned.new_achievements)
+        return True
+
+    async def _strong_rot_roll(self) -> int:
+        holders = await self.store.active_holders()
+        spawned = 0
+        for user_id in await self.store.eligible_users(self.admin_id):
+            if user_id in holders or self._rng.random() >= self.strong_chance:
+                continue
+            if await self._spawn_rot_for(user_id):
+                holders.add(user_id)
+                spawned += 1
+        return spawned
 
     async def start_rot_day(self, chat_id: int, starter_id: int) -> list[Game]:
         games: list[Game] = []
@@ -253,6 +330,16 @@ class PotatoService:
         await self.store.plan_rot_day(
             midnight.date().isoformat(), window_start, window_end, ROT_DAY_PROBABILITY
         )
+
+        strong_until = await self.store.get_auto("strong_until")
+        if strong_until is not None and now < strong_until:
+            last_roll = await self.store.get_auto("strong_roll")
+            if last_roll is None or now - last_roll >= STRONG_ROLL_SECONDS:
+                await self.store.set_auto("strong_roll", now)
+                try:
+                    await self._strong_rot_roll()
+                except Exception:
+                    logger.exception("potato: strong rot roll failed")
 
         first_in_batch = True
         for day, spawn_at, is_first in await self.store.due_rot_spawns(

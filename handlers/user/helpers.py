@@ -8,7 +8,7 @@ from aiogram.types import (
 
 import database as db
 
-from .constants import CAT_KAOMOJI_LIST
+from .constants import CAT_KAOMOJI_LIST, DOG_KAOMOJI_LIST
 
 
 def is_plain_message(message: types.Message) -> bool:
@@ -30,11 +30,25 @@ async def send_or_edit(
         await event.answer(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
 
 
+def pick_pet(is_vip: bool, show_cats: bool, show_dogs: bool) -> str:
+    if not is_vip:
+        return ""
+    pool: list[str] = []
+    if show_cats:
+        pool += CAT_KAOMOJI_LIST
+    if show_dogs:
+        pool += DOG_KAOMOJI_LIST
+    return random.choice(pool).strip() if pool else ""
+
+
 def get_share_preview_text(
-    user_stats: db.UserStats, ach_count: int, total_ach: int
+    user_stats: db.UserStats,
+    ach_count: int,
+    total_ach: int,
+    show_dogs: bool = False,
 ) -> str:
-    use_cats = user_stats.is_vip and user_stats.show_vip_cats
-    cat_inline = f" {random.choice(CAT_KAOMOJI_LIST).strip()} " if use_cats else ""
+    pet = pick_pet(user_stats.is_vip, user_stats.show_vip_cats, show_dogs)
+    cat_inline = f" {pet} " if pet else ""
 
     stats_items = []
     if user_stats.show_sent:

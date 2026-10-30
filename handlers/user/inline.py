@@ -12,14 +12,18 @@ from aiogram.types import (
 import database as db
 from achievements import ACHIEVEMENTS
 from config import ADMIN_ID
+from potato.formatting import build_share_text
+from potato.service import PotatoService
 
-from .helpers import get_share_preview_text
+from .helpers import get_share_preview_text, pick_pet
 
 router = Router()
 
 
 @router.inline_query()
-async def inline_query_handler(inline_query: types.InlineQuery, bot: Bot) -> None:
+async def inline_query_handler(
+    inline_query: types.InlineQuery, bot: Bot, potato_service: PotatoService
+) -> None:
     bot_username = (await bot.me()).username
     user_id = inline_query.from_user.id
     user_stats = await db.register_user(user_id)
@@ -51,7 +55,11 @@ async def inline_query_handler(inline_query: types.InlineQuery, bot: Bot) -> Non
 
     ach_count = await db.get_user_achievements_count(user_id)
     total_ach_count = len(ACHIEVEMENTS)
-    stats_text = get_share_preview_text(user_stats, ach_count, total_ach_count)
+    potato_stats = await potato_service.store.get_stats(user_id)
+    show_dogs = bool(potato_stats["show_dogs"])
+    stats_text = get_share_preview_text(
+        user_stats, ach_count, total_ach_count, show_dogs
+    )
     share_title = (
         "👑 Поделиться VIP профилем"
         if user_stats.is_vip
@@ -75,6 +83,22 @@ async def inline_query_handler(inline_query: types.InlineQuery, bot: Bot) -> Non
             description="Показать мою статистику",
             input_message_content=InputTextMessageContent(
                 message_text=stats_text, parse_mode=ParseMode.HTML
+            ),
+            reply_markup=kb,
+        )
+    )
+    potato_text = build_share_text(
+        potato_stats,
+        user_stats.is_vip,
+        pick_pet(user_stats.is_vip, user_stats.show_vip_cats, show_dogs),
+    )
+    results.append(
+        InlineQueryResultArticle(
+            id="potato_stats_share",
+            title="🥔 Поделиться статистикой «Гнилой картошки»",
+            description="Показать мои успехи в игре",
+            input_message_content=InputTextMessageContent(
+                message_text=potato_text, parse_mode=ParseMode.HTML
             ),
             reply_markup=kb,
         )

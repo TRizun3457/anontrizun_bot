@@ -7,6 +7,7 @@ from aiogram.types import (
 
 import database as db
 from achievements import ACHIEVEMENTS
+from potato.service import PotatoService
 
 from .constants import VIS_FIELD_MAP
 from .helpers import (
@@ -20,7 +21,9 @@ router = Router()
 
 @router.message(Command("settings"), F.chat.type == "private")
 @router.callback_query(F.data == "settings_menu")
-async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None:
+async def show_settings_menu(
+    event: types.Message | types.CallbackQuery, potato_service: PotatoService
+) -> None:
     if event.from_user is None:
         return
 
@@ -34,13 +37,16 @@ async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None
     }
     refresh_str = refresh_map.get(user_stats.code_auto_refresh, "Никогда")
     cats_str = "Включены ✅" if user_stats.show_vip_cats else "Выключены ❌"
+    show_dogs = bool((await potato_service.store.get_stats(user_id))["show_dogs"])
+    dogs_str = "Включены ✅" if show_dogs else "Выключены ❌"
 
     text = (
         "⚙️ <b>НАСТРОЙКИ ПРОФИЛЯ</b>\n"
         "─────────────────────\n\n"
         f"🔑 Ваш анонимный код: <code>{user_stats.anon_code}</code>\n\n"
         f"• Авто-обновление кода: {refresh_str}\n"
-        f"• Кастомизация котиков (VIP): {cats_str}\n\n"
+        f"• Кастомизация котиков (VIP): {cats_str}\n"
+        f"• Кастомизация собачек (VIP): {dogs_str}\n\n"
         "Выберите параметр для изменения ниже:"
     )
     kb = InlineKeyboardMarkup(
@@ -65,6 +71,12 @@ async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None
             ],
             [
                 InlineKeyboardButton(
+                    text=f"🐶 Собачки (VIP): {dogs_str}",
+                    callback_data="settings_toggle_dogs",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="📲 Настройки шеринга",
                     callback_data="settings_share_menu",
                 )
@@ -81,7 +93,9 @@ async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None
 
 
 @router.callback_query(F.data == "settings_refresh_code")
-async def handle_refresh_code_manual(callback: types.CallbackQuery) -> None:
+async def handle_refresh_code_manual(
+    callback: types.CallbackQuery, potato_service: PotatoService
+) -> None:
     if callback.from_user is None:
         return
 
@@ -90,13 +104,15 @@ async def handle_refresh_code_manual(callback: types.CallbackQuery) -> None:
         await callback.answer(
             f"✅ Ваш код успешно обновлен на: {result}", show_alert=True
         )
-        await show_settings_menu(callback)
+        await show_settings_menu(callback, potato_service)
     else:
         await callback.answer(f"❌ {result}", show_alert=True)
 
 
 @router.callback_query(F.data == "settings_toggle_autorefresh")
-async def handle_toggle_autorefresh(callback: types.CallbackQuery) -> None:
+async def handle_toggle_autorefresh(
+    callback: types.CallbackQuery, potato_service: PotatoService
+) -> None:
     if callback.from_user is None:
         return
 
@@ -106,11 +122,13 @@ async def handle_toggle_autorefresh(callback: types.CallbackQuery) -> None:
 
     await db.update_user_setting(callback.from_user.id, "code_auto_refresh", new_val)
     await callback.answer("⏱ Интервал авто-смены кода изменен.")
-    await show_settings_menu(callback)
+    await show_settings_menu(callback, potato_service)
 
 
 @router.callback_query(F.data == "settings_toggle_cats")
-async def handle_toggle_cats(callback: types.CallbackQuery) -> None:
+async def handle_toggle_cats(
+    callback: types.CallbackQuery, potato_service: PotatoService
+) -> None:
     if callback.from_user is None:
         return
 
@@ -120,11 +138,31 @@ async def handle_toggle_cats(callback: types.CallbackQuery) -> None:
     await db.update_user_setting(callback.from_user.id, "show_vip_cats", new_val)
     status_text = "включены" if new_val == "1" else "выключены"
     await callback.answer(f"🐱 Котики в оформлении {status_text}.")
-    await show_settings_menu(callback)
+    await show_settings_menu(callback, potato_service)
+
+
+@router.callback_query(F.data == "settings_toggle_dogs")
+async def handle_toggle_dogs(
+    callback: types.CallbackQuery, potato_service: PotatoService
+) -> None:
+    if callback.from_user is None:
+        return
+
+    stats = await potato_service.store.get_stats(callback.from_user.id)
+    new_val = not stats["show_dogs"]
+    await potato_service.store.set_dogs(callback.from_user.id, new_val)
+    await callback.answer(
+        "🐶 Собачки в оформлении включены."
+        if new_val
+        else "🐶 Собачки в оформлении выключены."
+    )
+    await show_settings_menu(callback, potato_service)
 
 
 @router.callback_query(F.data == "settings_share_menu")
-async def show_share_settings_menu(event: types.Message | types.CallbackQuery) -> None:
+async def show_share_settings_menu(
+    event: types.Message | types.CallbackQuery, potato_service: PotatoService
+) -> None:
     if event.from_user is None:
         return
 
@@ -133,7 +171,8 @@ async def show_share_settings_menu(event: types.Message | types.CallbackQuery) -
     ach_count = await db.get_user_achievements_count(user_id)
     total_ach = len(ACHIEVEMENTS)
 
-    preview_text = get_share_preview_text(user_stats, ach_count, total_ach)
+    show_dogs = bool((await potato_service.store.get_stats(user_id))["show_dogs"])
+    preview_text = get_share_preview_text(user_stats, ach_count, total_ach, show_dogs)
     vis_sent = "✅" if user_stats.show_sent else "❌"
     vis_received = "✅" if user_stats.show_received else "❌"
     vis_priority = "✅" if user_stats.show_priority else "❌"
@@ -194,7 +233,9 @@ async def show_share_settings_menu(event: types.Message | types.CallbackQuery) -
 
 
 @router.callback_query(F.data.startswith("toggle_share_vis_"))
-async def handle_toggle_share_visibility(callback: types.CallbackQuery) -> None:
+async def handle_toggle_share_visibility(
+    callback: types.CallbackQuery, potato_service: PotatoService
+) -> None:
     if callback.from_user is None or callback.data is None:
         return
 
@@ -212,4 +253,4 @@ async def handle_toggle_share_visibility(callback: types.CallbackQuery) -> None:
         return
 
     await callback.answer("✅ Видимость показателя изменена.")
-    await show_share_settings_menu(callback)
+    await show_share_settings_menu(callback, potato_service)
