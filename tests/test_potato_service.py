@@ -512,5 +512,5 @@ def test_holder_message_is_themed_with_deadline_and_vip_gold():
     run(svc.store.set_enabled(1, False))
     game = run(svc.start_game(-1, 99, 600))
     text = bot.to(game.holder_id)[0]
-    assert "Золотая гнилушка" in text and "🟨" in text
+    assert "Золотая гнилушка" in text and "❖" in text
     assert "Сгниёт в" in text

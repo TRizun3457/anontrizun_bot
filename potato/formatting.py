@@ -1,7 +1,7 @@
 from typing import Any
 
 from .achievements import POTATO_ACHIEVEMENTS
-from .theme import banner, bar, fmt_duration, rank_for
+from .theme import banner, bar, fmt_duration, rank_for, thin, tree
 
 
 def build_share_text(stats: dict[str, Any], is_vip: bool, decor: str = "") -> str:
@@ -12,6 +12,8 @@ def build_share_text(stats: dict[str, Any], is_vip: bool, decor: str = "") -> st
     if shown("share_received"):
         lines.append(f"📥 Получено картошек: <b>{stats['received']}</b>")
     if shown("share_passed"):
+        emoji, title, _ = rank_for(stats["passed"])
+        lines.append(f"{emoji} Ранг: <b>{title}</b>")
         lines.append(f"✅ Отражено (передано вовремя): <b>{stats['passed']}</b>")
     if shown("share_exploded"):
         lines.append(f"☠️ Сгнило: <b>{stats['exploded']}</b>")
@@ -21,13 +23,14 @@ def build_share_text(stats: dict[str, Any], is_vip: bool, decor: str = "") -> st
         lines.append(
             f"🏆 Достижений игры: <b>{len(stats['achievements'])}/{len(POTATO_ACHIEVEMENTS)}</b>"
         )
-    body = "\n".join(lines)
+    if not lines:
+        lines.append("🥔 Пока без статистики")
     if is_vip:
-        pet = f" {decor}" if decor else ""
         return (
-            f"✨ 👑 <b>КАРТОШКА-ПРОФИЛЬ{pet}</b> 👑 ✨\n💎 <b>Статус:</b> VIP\n\n{body}"
+            f"{banner('КАРТОШКА-ПРОФИЛЬ', True, decor)}\n"
+            f"💎 Статус: <b>VIP</b>\n{thin(True)}\n{tree(lines)}"
         )
-    return f"🥔 <b>Статистика «Гнилой картошки»:</b>\n{body}"
+    return f"{banner('ГНИЛАЯ КАРТОШКА', False)}\n{tree(lines)}"
 
 
 def format_stats(
@@ -42,12 +45,8 @@ def format_stats(
         progress = f"{bar(1, 1)} максимальный ранг!"
     else:
         progress = f"{bar(stats['passed'], next_at)} {stats['passed']}/{next_at}"
-    lines = [
-        banner("ГНИЛАЯ КАРТОШКА", is_vip, pet),
-        f"🏅 Ранг: {emoji} <b>{title}</b>",
-        f"📈 До следующего: {progress}",
-        "",
-        "🎮 Участие в игре: "
+    rows = [
+        "🎮 Участие: "
         + ("<b>вы в игре</b>" if stats["enabled"] else "<b>вы вышли из игры</b>"),
         f"📥 Получено картошек: <b>{stats['received']}</b>",
         f"✅ Отражено (передано вовремя): <b>{stats['passed']}</b>",
@@ -56,31 +55,41 @@ def format_stats(
         f"📣 Запусков картошки: <b>{stats['started']}</b>",
     ]
     if stats["fastest_pass_sec"] is not None:
-        lines.append(
-            f"⚡ Самая быстрая передача: <b>{stats['fastest_pass_sec']} с.</b>"
-        )
+        rows.append(f"⚡ Самая быстрая передача: <b>{stats['fastest_pass_sec']} с.</b>")
+    lines = [
+        banner("ГНИЛАЯ КАРТОШКА", is_vip, pet),
+        "",
+        f"{emoji} Ранг: <b>{title}</b>",
+        f"╰ {progress}",
+        thin(is_vip),
+        tree(rows),
+    ]
+    notes: list[str] = []
     if lock_note:
-        lines.append(f"\n🔒 {lock_note}")
+        notes.append(f"🔒 {lock_note}")
     if strong_left > 0:
-        lines.append(
-            f"\n🌋 <b>Идёт СИЛЬНОЕ ГНИЕНИЕ</b> — ещё {fmt_duration(strong_left)}."
+        notes.append(
+            f"🌋 <b>Идёт СИЛЬНОЕ ГНИЕНИЕ</b> — ещё {fmt_duration(strong_left)}"
         )
     if not is_vip:
-        lines.append(
-            "\n💎 Настраивать, чем делиться, и золотое оформление игры — для VIP."
-        )
+        notes.append("💎 Выбор того, чем делиться, и золотое оформление — для VIP.")
+    if notes:
+        lines += [thin(is_vip), *notes]
     return "\n".join(lines)
 
 
 def format_achievements(stats: dict, is_vip: bool = False) -> str:
     unlocked = set(stats["achievements"])
     total = len(POTATO_ACHIEVEMENTS)
-    lines = [
-        banner(f"ДОСТИЖЕНИЯ ИГРЫ ({len(unlocked)}/{total})", is_vip),
-        f"{bar(len(unlocked), total)} {len(unlocked)}/{total}",
-        "",
-    ]
+    rows = []
     for ach_id, (title, desc) in POTATO_ACHIEVEMENTS.items():
         mark = "✅" if ach_id in unlocked else "🔒"
-        lines.append(f"{mark} {title} — {desc}")
+        rows.append(f"{mark} {title}\n│  <i>{desc}</i>")
+    lines = [
+        banner("ДОСТИЖЕНИЯ ИГРЫ", is_vip),
+        "",
+        f"{bar(len(unlocked), total)} <b>{len(unlocked)}/{total}</b>",
+        thin(is_vip),
+        "\n".join(rows),
+    ]
     return "\n".join(lines)

@@ -19,8 +19,8 @@ def test_bar_bounds():
 
 
 def test_vip_and_regular_banners_differ():
-    assert "🟨" in banner("Т", True) and "👑" in banner("Т", True)
-    assert "🟩" in banner("Т", False) and "👑" not in banner("Т", False)
+    assert "✦" in banner("Т", True) and "❖" in banner("Т", True)
+    assert "◈" in banner("Т", False) and "❖" not in banner("Т", False)
     assert "🐶" in banner("Т", True, "🐶")
 
 
@@ -43,3 +43,16 @@ def test_poison_text_no_explosion_wording():
 def test_fmt_duration():
     assert fmt_duration(600) == "10 мин."
     assert fmt_duration(5400) == "1 ч. 30 мин."
+
+
+def test_banners_use_symbols_not_color_squares():
+    for vip in (True, False):
+        text = banner("Т", vip)
+        assert "🟨" not in text and "🟩" not in text
+
+
+def test_tree_layout():
+    from potato.theme import tree
+
+    assert tree(["a"]) == "╺ a"
+    assert tree(["a", "b", "c"]) == "┌ a\n├ b\n└ c"

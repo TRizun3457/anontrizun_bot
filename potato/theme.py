@@ -54,14 +54,32 @@ def bar(current: int, total: int, width: int = 10) -> str:
 
 
 def line(is_vip: bool) -> str:
-    return "🟨" * 8 if is_vip else "🟩" * 8
+    return "✦━━━━━━━━━━━━━━━━✦" if is_vip else "◈────────────────◈"
+
+
+def thin(is_vip: bool) -> str:
+    return "· · · · · · · · · · · ·" if is_vip else "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"
+
+
+def tree(rows: list[str]) -> str:
+    if len(rows) == 1:
+        return f"╺ {rows[0]}"
+    out = []
+    for index, row in enumerate(rows):
+        if index == 0:
+            mark = "┌"
+        elif index == len(rows) - 1:
+            mark = "└"
+        else:
+            mark = "├"
+        out.append(f"{mark} {row}")
+    return "\n".join(out)
 
 
 def banner(title: str, is_vip: bool, pet: str = "") -> str:
     tail = f" {pet}" if pet else ""
-    if is_vip:
-        return f"{line(True)}\n✨👑 <b>{title}</b>{tail} 👑✨\n{line(True)}"
-    return f"{line(False)}\n🥔 <b>{title}</b>\n{line(False)}"
+    mark = "❖" if is_vip else "◆"
+    return f"{line(is_vip)}\n{mark} <b>{title}</b> {mark}{tail}\n{line(is_vip)}"
 
 
 def holder_text(
