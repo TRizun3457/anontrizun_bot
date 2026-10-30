@@ -156,6 +156,21 @@ class PotatoStore:
         ).fetchone()
 
     @staticmethod
+    def _is_eligible(conn: sqlite3.Connection, user_id: int) -> bool:
+        row = conn.execute(
+            """
+            SELECT u.user_id
+            FROM users u
+            LEFT JOIN potato_players p ON p.user_id = u.user_id
+            WHERE u.user_id = ?
+              AND u.user_id NOT IN (SELECT user_id FROM banned)
+              AND (COALESCE(p.enabled, 1) = 1 OR u.is_vip = 0)
+            """,
+            (user_id,),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
     def _grant(conn: sqlite3.Connection, user_id: int) -> list[str]:
         stats = dict(PotatoStore._player(conn, user_id))
         granted: list[str] = []
@@ -321,6 +336,10 @@ class PotatoStore:
             ).fetchone()
             if row is None:
                 raise PotatoError("Игра уже завершена.")
+            if row["holder_id"] is not None:
+                raise PotatoError("У игры уже есть получатель картошки.")
+            if not self._is_eligible(conn, user_id):
+                raise PotatoError("Пользователь больше не может участвовать в игре.")
             conn.execute(
                 """UPDATE potato_games SET holder_id = ?, holder_since = ?, expires_at = ?
                    WHERE id = ?""",
@@ -364,6 +383,8 @@ class PotatoStore:
                 raise PotatoError("Поздно — картошка уже взорвалась! 💥")
             if to_user == from_user:
                 raise PotatoError("Нельзя передать картошку самому себе.")
+            if to_user is not None and not self._is_eligible(conn, to_user):
+                raise PotatoError("Получатель больше не может участвовать в игре.")
 
             elapsed = max(0, now - (game.holder_since or now))
             self._ensure_player(conn, from_user)
@@ -412,6 +433,61 @@ class PotatoStore:
             return PassResult(
                 new_game, from_user, to_user, elapsed, granted, receiver_granted
             )
+
+        return await self._run(fn)
+
+    async def rollback_undelivered_holder(
+        self, game_id: int, failed_holder: int, failed_achievements: list[str]
+    ) -> None:
+        """Undo the receipt for a holder who could not be notified.
+
+        The game remains active but temporarily has no holder so the service can
+        safely select and notify another eligible participant.
+        """
+
+        def fn(conn: sqlite3.Connection) -> None:
+            row = conn.execute(
+                "SELECT status, holder_id FROM potato_games WHERE id = ?", (game_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != "active"
+                or row["holder_id"] != failed_holder
+            ):
+                raise PotatoError("Состояние игры изменилось до отмены получателя.")
+            conn.execute(
+                "UPDATE potato_players SET received = MAX(0, received - 1) WHERE user_id = ?",
+                (failed_holder,),
+            )
+            for achievement_id in failed_achievements:
+                conn.execute(
+                    "DELETE FROM potato_achievements WHERE user_id = ? AND ach_id = ?",
+                    (failed_holder, achievement_id),
+                )
+            conn.execute(
+                """UPDATE potato_games
+                   SET holder_id = NULL, holder_since = NULL, expires_at = NULL
+                   WHERE id = ? AND status = 'active' AND holder_id = ?""",
+                (game_id, failed_holder),
+            )
+
+        await self._run(fn)
+
+    async def defuse_unheld_game(self, game_id: int) -> Game:
+        def fn(conn: sqlite3.Connection) -> Game:
+            conn.execute(
+                """UPDATE potato_games SET status = 'defused'
+                   WHERE id = ? AND status = 'active' AND holder_id IS NULL""",
+                (game_id,),
+            )
+            game = _game(
+                conn.execute(
+                    "SELECT * FROM potato_games WHERE id = ?", (game_id,)
+                ).fetchone()
+            )
+            if game is None or game.status != "defused":
+                raise PotatoError("Не удалось завершить игру без получателя.")
+            return game
 
         return await self._run(fn)
 
