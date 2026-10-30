@@ -69,6 +69,11 @@ async def show_settings_menu(event: types.Message | types.CallbackQuery) -> None
                     callback_data="settings_share_menu",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="🥔 Гнилая картошка", callback_data="settings_potato"
+                )
+            ],
             [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="my_status")],
         ]
     )

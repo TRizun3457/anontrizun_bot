@@ -1,13 +1,17 @@
 import asyncio
+import contextlib
 import logging
 
 from aiogram import Bot, Dispatcher
 
 import database as db
-from config import BOT_TOKEN, DB_NAME
+from config import ADMIN_ID, BOT_TOKEN, DB_NAME
 from handlers import admin, payments, user
+from handlers.user.potato import pass_markup
 from middlewares.chat_check import AllowedChatMiddleware
 from middlewares.throttling import ThrottlingMiddleware
+from potato.service import PotatoService
+from potato.store import PotatoStore
 from resilience import ErrorGuardMiddleware, RetrySession
 
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +23,16 @@ async def main() -> None:
 
     bot = Bot(token=BOT_TOKEN, session=RetrySession(timeout=60))
     dp = Dispatcher()
+
+    potato_store = PotatoStore(DB_NAME)
+    await potato_store.init()
+    potato_service = PotatoService(
+        potato_store, bot, admin_id=ADMIN_ID, pass_markup=pass_markup
+    )
+    dp["potato_service"] = potato_service
+    potato_task = asyncio.create_task(
+        potato_service.run_expiry_loop(), name="potato-expiry"
+    )
 
     throttling_middleware = ThrottlingMiddleware(
         command_limit=0.3,
@@ -52,9 +66,11 @@ async def main() -> None:
             polling_timeout=60,
         )
     finally:
+        potato_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await potato_task
         await bot.session.close()
-        if hasattr(db, "close_db"):
-            await db.close_db()
+        await db.close_db()
         logger.info("🛑 Бот успешно остановлен.")
 
 

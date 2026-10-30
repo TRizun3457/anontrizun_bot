@@ -55,7 +55,8 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
 
     is_priority = user_stats.priority_messages > 0
     if is_priority:
-        await db.waste_priority_message(user_id)
+        # The balance may have been spent by a concurrent message.
+        is_priority = await db.waste_priority_message(user_id)
 
     try:
         keyboard = InlineKeyboardMarkup(

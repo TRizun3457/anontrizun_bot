@@ -145,6 +145,7 @@ fn database(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(increment_total_spent_stars, m)?)?;
     m.add_function(wrap_pyfunction!(increment_answer_streak, m)?)?;
     m.add_function(wrap_pyfunction!(check_and_grant_achievements, m)?)?;
+    m.add_function(wrap_pyfunction!(close_db, m)?)?;
     Ok(())
 }
 
@@ -999,25 +1000,14 @@ fn get_user_id_by_id_or_code(py: Python<'_>, identifier: String) -> PyResult<Bou
 fn grant_achievement(py: Python<'_>, user_id: i64, ach_id: String) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let state = get_state().await?;
-        let exists: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM user_achievements WHERE user_id = ? AND ach_id = ?")
+        let res =
+            sqlx::query("INSERT OR IGNORE INTO user_achievements (user_id, ach_id) VALUES (?, ?)")
                 .bind(user_id)
                 .bind(&ach_id)
-                .fetch_optional(&state.pool)
+                .execute(&state.pool)
                 .await
                 .map_err(db_err)?;
-
-        if exists.is_some() {
-            return Ok(false);
-        }
-
-        sqlx::query("INSERT OR IGNORE INTO user_achievements (user_id, ach_id) VALUES (?, ?)")
-            .bind(user_id)
-            .bind(&ach_id)
-            .execute(&state.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(true)
+        Ok(res.rows_affected() > 0)
     })
 }
 
@@ -1139,31 +1129,39 @@ fn check_and_grant_achievements(py: Python<'_>, user_id: i64) -> PyResult<Bound<
             ("star_fall", total_spent_stars.unwrap_or(0) > 100),
         ];
 
+        let mut tx = state.pool.begin().await.map_err(db_err)?;
         for (ach_id, condition) in achievements_to_check {
-            if condition {
-                let exists: Option<i64> = sqlx::query_scalar(
-                    "SELECT 1 FROM user_achievements WHERE user_id = ? AND ach_id = ?",
-                )
-                .bind(user_id)
-                .bind(ach_id)
-                .fetch_optional(&state.pool)
-                .await
-                .map_err(db_err)?;
-
-                if exists.is_none() {
-                    sqlx::query(
-                        "INSERT OR IGNORE INTO user_achievements (user_id, ach_id) VALUES (?, ?)",
-                    )
-                    .bind(user_id)
-                    .bind(ach_id)
-                    .execute(&state.pool)
-                    .await
-                    .map_err(db_err)?;
-                    granted.push(ach_id.to_string());
-                }
+            if !condition {
+                continue;
+            }
+            let res = sqlx::query(
+                "INSERT OR IGNORE INTO user_achievements (user_id, ach_id) VALUES (?, ?)",
+            )
+            .bind(user_id)
+            .bind(ach_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+            if res.rows_affected() > 0 {
+                granted.push(ach_id.to_string());
             }
         }
+        tx.commit().await.map_err(db_err)?;
 
         Ok(granted)
+    })
+}
+
+#[pyfunction]
+fn close_db(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        let taken = {
+            let mut guard = DB_STATE.write().await;
+            guard.take()
+        };
+        if let Some(state) = taken {
+            state.pool.close().await;
+        }
+        Ok(())
     })
 }
