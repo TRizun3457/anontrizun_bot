@@ -1305,6 +1305,16 @@ fn revoke_purchase(
                         .map_err(db_err)?;
                 res.rows_affected() as i64
             }
+            "priority" => {
+                let res = sqlx::query(
+                    "UPDATE users SET priority_messages = priority_messages - 1 WHERE user_id = ? AND priority_messages > 0",
+                )
+                .bind(user_id)
+                .execute(&state.pool)
+                .await
+                .map_err(db_err)?;
+                res.rows_affected() as i64
+            }
             "air" => {
                 let res = sqlx::query(
                     "UPDATE users SET air_purchased = air_purchased - 1 WHERE user_id = ? AND air_purchased > 0",

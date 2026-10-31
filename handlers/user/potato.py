@@ -17,6 +17,7 @@ from potato.service import (
     fmt_duration,
 )
 from potato.store import MAX_DURATION, MIN_DURATION, PotatoError, random_duration
+from refunds import record_balance_purchase
 
 from .helpers import pick_pet, send_or_edit
 
@@ -370,6 +371,7 @@ async def potato_pay(
             "❌ Не удалось выполнить покупку, звёзды возвращены.", show_alert=True
         )
         return
+    await record_balance_purchase(db, user_id, item, price)
     await db.increment_total_spent_stars(user_id, price)
     await db.grant_achievement(user_id, "first_donate")
     await potato_service.record_purchase(user_id, item, price)

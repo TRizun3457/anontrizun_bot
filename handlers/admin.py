@@ -9,7 +9,12 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database as db
 from config import ADMIN_ID
-from refunds import PendingRefunds, describe_payload, revoke_benefit
+from refunds import (
+    PendingRefunds,
+    describe_payload,
+    parse_balance_payload,
+    revoke_benefit,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -419,48 +424,64 @@ async def process_single_refund(
             )
         return False
 
+    payment = await db.get_payment_by_charge_id(charge_id)
+    balance = parse_balance_payload(payment.payload if payment else None)
     try:
-        await bot.refund_star_payment(
-            user_id=user_id,
-            telegram_payment_charge_id=charge_id,
-        )
+        if balance is not None:
+            await db.give_balance(balance[1], user_id)
+        else:
+            await bot.refund_star_payment(
+                user_id=user_id,
+                telegram_payment_charge_id=charge_id,
+            )
         await db.set_payment_status_by_charge_id(charge_id=charge_id, status="refunded")
-    except TelegramAPIError as exc:
-        logger.exception("Refund error via Telegram API for charge %s", charge_id)
+    except (TelegramAPIError, RuntimeError) as exc:
+        logger.exception("Refund error for charge %s", charge_id)
         await db.set_payment_status_by_charge_id(
             charge_id=charge_id, status="refund_failed"
         )
 
         if message:
             await message.answer(
-                f"❌ Ошибка Telegram API при возврате <code>{charge_id}</code>:\n<code>{exc.message}</code>",
+                f"❌ Ошибка при возврате <code>{charge_id}</code>:\n<code>{getattr(exc, 'message', exc)}</code>",
                 parse_mode=ParseMode.HTML,
             )
         return False
 
     note = ""
     if revoke:
-        payment = await db.get_payment_by_charge_id(charge_id)
         try:
             note = await revoke_benefit(
                 db, user_id, payment.payload if payment else None
             )
         except Exception:
             logger.exception("Failed to revoke purchase for charge %s", charge_id)
-            note = "⚠️ Звёзды возвращены, но забрать покупку не удалось."
+            note = "⚠️ Возврат выполнен, но забрать покупку не удалось."
+
+    if balance is not None:
+        user_text = (
+            f"💸 Покупка отменена, {balance[1]} ⭐ возвращены на ваш внутренний баланс."
+            if revoke
+            else f"💸 {balance[1]} ⭐ возвращены на ваш внутренний баланс."
+        )
+    elif revoke and "не удалось" not in note:
+        user_text = "💸 Ваш платёж возвращён, покупка отменена."
+    else:
+        user_text = "💸 Ваш платёж возвращён." if revoke else ""
+    if user_text:
         try:
-            await bot.send_message(
-                user_id,
-                "💸 Ваш платёж возвращён, покупка отменена."
-                if "не удалось" not in note
-                else "💸 Ваш платёж возвращён.",
-            )
+            await bot.send_message(user_id, user_text)
         except TelegramAPIError:
             logger.debug("cannot notify %s about refund", user_id, exc_info=True)
 
     if message:
+        where = (
+            f"{balance[1]} ⭐ возвращены на внутренний баланс пользователя"
+            if balance is not None
+            else "звёзды возвращены через Telegram"
+        )
         await message.answer(
-            f"✅ Возврат платежа <code>{charge_id}</code> для пользователя <code>{user_id}</code> выполнен успешно."
+            f"✅ Возврат <code>{charge_id}</code> для пользователя <code>{user_id}</code> выполнен: {where}."
             + (f"\n🧾 {note}" if note else ""),
             parse_mode=ParseMode.HTML,
         )
