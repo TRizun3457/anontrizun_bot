@@ -35,6 +35,11 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
                     text="🏆 Мои достижения", callback_data="my_achievements"
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="🥔 Гнилая картошка", callback_data="settings_potato"
+                )
+            ],
             [InlineKeyboardButton(text="🛒 Магазин", callback_data="main_shop")],
         ]
     )
@@ -51,6 +56,11 @@ def get_profile_actions_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="🏆 Мои достижения", callback_data="my_achievements"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🥔 Гнилая картошка", callback_data="settings_potato"
                 )
             ],
             [

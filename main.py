@@ -79,6 +79,7 @@ async def main() -> None:
         for task in potato_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        await potato_store.close()
         await bot.session.close()
         await db.close_db()
         logger.info("🛑 Бот успешно остановлен.")

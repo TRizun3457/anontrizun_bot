@@ -341,3 +341,26 @@ def test_left_non_vip_cannot_receive_potato():
     with pytest.raises(PotatoError):
         run(store.assign_holder(game.id, 1))
     assert run(store.candidates(game.id, set(), None)) == [2]
+
+
+def test_file_db_reuses_connection_and_closes(tmp_path):
+    path = str(tmp_path / "c.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(INIT_SQL)
+    conn.execute("INSERT INTO users (user_id) VALUES (1)")
+    conn.commit()
+    conn.close()
+    store = PotatoStore(path)
+    run(store.init())
+
+    async def go():
+        first = store._keep
+        await store.get_stats(1)
+        await store.get_stats(1)
+        assert store._keep is first and first is not None
+        await store.close()
+        assert store._keep is None
+        await store.get_stats(1)
+        await store.close()
+
+    run(go())

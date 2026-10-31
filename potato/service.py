@@ -460,7 +460,10 @@ class PotatoService:
 
     async def resolve_expired(self) -> list[ExplodeResult]:
         results: list[ExplodeResult] = []
+        now = self.store.now()
         for game in await self.store.active_games():
+            if game.expires_at is None or game.expires_at > now:
+                continue
             try:
                 res = await self.store.explode_if_expired(game.id)
             except Exception:

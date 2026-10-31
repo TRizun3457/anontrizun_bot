@@ -15,6 +15,7 @@ BASE_MIGRATION = MIGRATIONS_DIR / "0002_potato.sql"
 EVENTS_MIGRATION = MIGRATIONS_DIR / "0003_potato_events.sql"
 EVENTS_VERSION = 3
 EXTRAS_MIGRATION = MIGRATIONS_DIR / "0004_potato_extras.sql"
+INDEXES_MIGRATION = MIGRATIONS_DIR / "0005_potato_indexes.sql"
 SHARE_FIELDS = (
     "share_received",
     "share_passed",
@@ -112,6 +113,17 @@ class PotatoStore:
         if db_path == ":memory:":
             self._keep = self._open()
 
+    def _conn(self) -> sqlite3.Connection:
+        if self._keep is None:
+            self._keep = self._open()
+        return self._keep
+
+    async def close(self) -> None:
+        async with self._lock:
+            if self._keep is not None:
+                await asyncio.to_thread(self._keep.close)
+                self._keep = None
+
     def _open(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
             self.db_path, timeout=10, isolation_level=None, check_same_thread=False
@@ -126,19 +138,15 @@ class PotatoStore:
         return int(self._clock())
 
     def _run_sync(self, fn: Callable[[sqlite3.Connection], Any]) -> Any:
-        conn = self._keep or self._open()
+        conn = self._conn()
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                result = fn(conn)
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-            conn.execute("COMMIT")
-            return result
-        finally:
-            if self._keep is None:
-                conn.close()
+            result = fn(conn)
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+        return result
 
     async def _run(self, fn: Callable[[sqlite3.Connection], Any]) -> Any:
         async with self._lock:
@@ -159,13 +167,9 @@ class PotatoStore:
             if not applied:
                 conn.executescript(EVENTS_MIGRATION.read_text(encoding="utf-8"))
             conn.executescript(EXTRAS_MIGRATION.read_text(encoding="utf-8"))
+            conn.executescript(INDEXES_MIGRATION.read_text(encoding="utf-8"))
 
-        conn = self._keep or self._open()
-        try:
-            apply(conn)
-        finally:
-            if self._keep is None:
-                conn.close()
+        apply(self._conn())
 
     def now(self) -> int:
         return self._now()
