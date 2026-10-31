@@ -14,19 +14,21 @@ from middlewares.throttling import ThrottlingMiddleware
 from potato.service import PotatoService
 from potato.store import PotatoStore
 from resilience import ErrorGuardMiddleware, RetrySession
+from schema_repair import repair_legacy_schema
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
+    repair_legacy_schema(DB_NAME)
     await db.init_db(DB_NAME)
 
     bot = Bot(token=BOT_TOKEN, session=RetrySession(timeout=60))
     dp = Dispatcher()
 
     potato_store = PotatoStore(DB_NAME)
-    await potato_store.init()
+    await potato_store.init(apply_migrations=False)
     potato_service = PotatoService(
         potato_store,
         bot,

@@ -16,6 +16,20 @@ EVENTS_MIGRATION = MIGRATIONS_DIR / "0003_potato_events.sql"
 EVENTS_VERSION = 3
 EXTRAS_MIGRATION = MIGRATIONS_DIR / "0004_potato_extras.sql"
 INDEXES_MIGRATION = MIGRATIONS_DIR / "0005_potato_indexes.sql"
+REQUIRED_TABLES = frozenset(
+    {
+        "potato_players",
+        "potato_games",
+        "potato_history",
+        "potato_achievements",
+        "potato_chat_cooldown",
+        "potato_rot_days",
+        "potato_rot_spawns",
+        "potato_auto",
+        "potato_extra",
+        "potato_purchases",
+    }
+)
 SHARE_FIELDS = (
     "share_received",
     "share_passed",
@@ -152,7 +166,7 @@ class PotatoStore:
         async with self._lock:
             return await asyncio.to_thread(self._run_sync, fn)
 
-    async def init(self) -> None:
+    async def init(self, apply_migrations: bool = True) -> None:
         def apply(conn: sqlite3.Connection) -> None:
             conn.executescript(BASE_MIGRATION.read_text(encoding="utf-8"))
             has_marker = conn.execute(
@@ -169,7 +183,28 @@ class PotatoStore:
             conn.executescript(EXTRAS_MIGRATION.read_text(encoding="utf-8"))
             conn.executescript(INDEXES_MIGRATION.read_text(encoding="utf-8"))
 
-        apply(self._conn())
+        def verify(conn: sqlite3.Connection) -> None:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            missing = REQUIRED_TABLES - tables
+            columns = (
+                {row[1] for row in conn.execute("PRAGMA table_info(potato_games)")}
+                if "potato_games" in tables
+                else set()
+            )
+            if missing or "kind" not in columns:
+                raise RuntimeError(
+                    "Схема игры «Гнилая картошка» не создана миграциями Rust-модуля. "
+                    "Пересоберите модуль (maturin develop) и запустите бота снова. "
+                    f"Не хватает: {sorted(missing) or 'колонка potato_games.kind'}"
+                )
+
+        conn = self._conn()
+        await asyncio.to_thread(apply if apply_migrations else verify, conn)
 
     def now(self) -> int:
         return self._now()
