@@ -81,6 +81,11 @@ async def show_settings_menu(
                     callback_data="settings_share_menu",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="🛠 Сообщить о проблеме", callback_data="settings_report"
+                )
+            ],
             [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="my_status")],
         ]
     )
