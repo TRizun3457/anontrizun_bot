@@ -91,24 +91,19 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
         await message.answer("❌ Ошибка при отправке.", parse_mode=ParseMode.HTML)
         return
 
-    await db.add_message(
-        sent_msg.message_id,
-        user_id,
-        user_stats.anon_code,
-        is_priority,
-        message.message_id,
-    )
-    if is_priority:
-        await db.increment_priority_sent_count(user_id)
-    await db.increment_sent_count(user_id)
-
     msg_text = (message.text or message.caption or "").lower()
-    if "42" in msg_text:
-        await db.grant_achievement(user_id, "bro_42")
-    if "67" in msg_text:
-        await db.grant_achievement(user_id, "degrade_67")
-
-    await db.check_and_grant_achievements(user_id)
+    try:
+        await db.record_sent_message(
+            sent_msg.message_id,
+            user_id,
+            user_stats.anon_code,
+            is_priority,
+            message.message_id,
+            "42" in msg_text,
+            "67" in msg_text,
+        )
+    except Exception:
+        logger.exception("Failed to record message from %s", user_id)
 
     try:
         confirm_text = (

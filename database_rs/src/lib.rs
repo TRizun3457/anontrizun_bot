@@ -145,6 +145,8 @@ fn database(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(increment_total_spent_stars, m)?)?;
     m.add_function(wrap_pyfunction!(increment_answer_streak, m)?)?;
     m.add_function(wrap_pyfunction!(check_and_grant_achievements, m)?)?;
+    m.add_function(wrap_pyfunction!(record_sent_message, m)?)?;
+    m.add_function(wrap_pyfunction!(refresh_due_codes, m)?)?;
     m.add_function(wrap_pyfunction!(close_db, m)?)?;
     Ok(())
 }
@@ -1085,59 +1087,130 @@ fn increment_answer_streak(py: Python<'_>, user_id: i64) -> PyResult<Bound<'_, P
     })
 }
 
+async fn grant_achievements_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    user_id: i64,
+) -> PyResult<Vec<String>> {
+    let row: Option<(i64, i64, i64, i64, Option<i64>, Option<i64>, Option<i64>)> = sqlx::query_as(
+        r#"SELECT air_purchased, sent_count, received_count, is_vip,
+                   priority_sent_count, total_spent_stars, answer_streak
+                   FROM users WHERE user_id = ?"#,
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_err)?;
+
+    let Some((
+        air_purchased,
+        sent_count,
+        received_count,
+        is_vip,
+        priority_sent_count,
+        total_spent_stars,
+        answer_streak,
+    )) = row
+    else {
+        return Ok(Vec::new());
+    };
+
+    let achievements_to_check = [
+        ("air_1", air_purchased >= 1),
+        ("air_10", air_purchased >= 10),
+        ("air_100", air_purchased >= 100),
+        ("vip_access", is_vip != 0),
+        ("anon_first", sent_count >= 1),
+        ("who_are_you", sent_count >= 100),
+        ("secret_fan", sent_count >= 200),
+        ("vip_person", priority_sent_count.unwrap_or(0) >= 10),
+        ("not_interested", (sent_count - received_count) >= 20),
+        ("answer_streak_15", answer_streak.unwrap_or(0) >= 15),
+        ("star_fall", total_spent_stars.unwrap_or(0) > 100),
+    ];
+
+    let mut granted = Vec::new();
+    for (ach_id, condition) in achievements_to_check {
+        if !condition {
+            continue;
+        }
+        let res =
+            sqlx::query("INSERT OR IGNORE INTO user_achievements (user_id, ach_id) VALUES (?, ?)")
+                .bind(user_id)
+                .bind(ach_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(db_err)?;
+        if res.rows_affected() > 0 {
+            granted.push(ach_id.to_string());
+        }
+    }
+    Ok(granted)
+}
+
 #[pyfunction]
 fn check_and_grant_achievements(py: Python<'_>, user_id: i64) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let state = get_state().await?;
-        let row: Option<(i64, i64, i64, i64, Option<i64>, Option<i64>, Option<i64>)> =
-            sqlx::query_as(
-                r#"SELECT air_purchased, sent_count, received_count, is_vip,
-                       priority_sent_count, total_spent_stars, answer_streak
-                       FROM users WHERE user_id = ?"#,
+        let mut tx = state.pool.begin().await.map_err(db_err)?;
+        let granted = grant_achievements_tx(&mut tx, user_id).await?;
+        tx.commit().await.map_err(db_err)?;
+        Ok(granted)
+    })
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn record_sent_message(
+    py: Python<'_>,
+    admin_msg_id: i64,
+    sender_id: i64,
+    anon_code: String,
+    is_priority: bool,
+    user_msg_id: i64,
+    has_42: bool,
+    has_67: bool,
+) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        let state = get_state().await?;
+        let mut tx = state.pool.begin().await.map_err(db_err)?;
+
+        sqlx::query(
+            "INSERT INTO messages (admin_msg_id, sender_id, anon_code, is_priority, user_msg_id) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(admin_msg_id)
+        .bind(sender_id)
+        .bind(anon_code)
+        .bind(if is_priority { 1 } else { 0 })
+        .bind(user_msg_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+
+        if is_priority {
+            sqlx::query(
+                "UPDATE users SET priority_sent_count = priority_sent_count + 1 WHERE user_id = ?",
             )
-            .bind(user_id)
-            .fetch_optional(&state.pool)
+            .bind(sender_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        }
+
+        sqlx::query("UPDATE users SET sent_count = sent_count + 1 WHERE user_id = ?")
+            .bind(sender_id)
+            .execute(&mut *tx)
             .await
             .map_err(db_err)?;
 
-        if row.is_none() {
-            return Ok(Vec::<String>::new());
-        }
-
-        let (
-            air_purchased,
-            sent_count,
-            received_count,
-            is_vip,
-            priority_sent_count,
-            total_spent_stars,
-            answer_streak,
-        ) = row.unwrap();
-
-        let mut granted = Vec::new();
-        let achievements_to_check = [
-            ("air_1", air_purchased >= 1),
-            ("air_10", air_purchased >= 10),
-            ("air_100", air_purchased >= 100),
-            ("vip_access", is_vip != 0),
-            ("anon_first", sent_count >= 1),
-            ("who_are_you", sent_count >= 100),
-            ("secret_fan", sent_count >= 200),
-            ("vip_person", priority_sent_count.unwrap_or(0) >= 10),
-            ("not_interested", (sent_count - received_count) >= 20),
-            ("answer_streak_15", answer_streak.unwrap_or(0) >= 15),
-            ("star_fall", total_spent_stars.unwrap_or(0) > 100),
-        ];
-
-        let mut tx = state.pool.begin().await.map_err(db_err)?;
-        for (ach_id, condition) in achievements_to_check {
+        let mut granted: Vec<String> = Vec::new();
+        for (ach_id, condition) in [("bro_42", has_42), ("degrade_67", has_67)] {
             if !condition {
                 continue;
             }
             let res = sqlx::query(
                 "INSERT OR IGNORE INTO user_achievements (user_id, ach_id) VALUES (?, ?)",
             )
-            .bind(user_id)
+            .bind(sender_id)
             .bind(ach_id)
             .execute(&mut *tx)
             .await
@@ -1146,9 +1219,65 @@ fn check_and_grant_achievements(py: Python<'_>, user_id: i64) -> PyResult<Bound<
                 granted.push(ach_id.to_string());
             }
         }
-        tx.commit().await.map_err(db_err)?;
 
+        granted.extend(grant_achievements_tx(&mut tx, sender_id).await?);
+        tx.commit().await.map_err(db_err)?;
         Ok(granted)
+    })
+}
+
+#[pyfunction]
+fn refresh_due_codes(py: Python<'_>, now: i64) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        let state = get_state().await?;
+
+        sqlx::query(
+            "UPDATE users SET code_refreshed_at = ? WHERE code_refreshed_at IS NULL AND code_auto_refresh IN ('8h', 'daily', 'weekly')",
+        )
+        .bind(now)
+        .execute(&state.pool)
+        .await
+        .map_err(db_err)?;
+
+        let due: Vec<(i64, Option<String>)> = sqlx::query_as(
+            r#"SELECT user_id, anon_code FROM users
+               WHERE code_auto_refresh IN ('8h', 'daily', 'weekly')
+                 AND user_id NOT IN (SELECT user_id FROM banned)
+                 AND code_refreshed_at + CASE code_auto_refresh
+                       WHEN '8h' THEN 28800
+                       WHEN 'daily' THEN 86400
+                       ELSE 604800 END <= ?"#,
+        )
+        .bind(now)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_err)?;
+
+        let mut refreshed: Vec<(i64, String)> = Vec::with_capacity(due.len());
+        for (user_id, old_code) in due {
+            let new_code = generate_anon_code();
+            let mut tx = state.pool.begin().await.map_err(db_err)?;
+            sqlx::query("UPDATE users SET anon_code = ?, code_refreshed_at = ? WHERE user_id = ?")
+                .bind(&new_code)
+                .bind(now)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+            if let Some(old) = old_code {
+                sqlx::query(
+                    "UPDATE messages SET anon_code = NULL WHERE sender_id = ? AND UPPER(anon_code) = UPPER(?)",
+                )
+                .bind(user_id)
+                .bind(&old)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+            }
+            tx.commit().await.map_err(db_err)?;
+            refreshed.push((user_id, new_code));
+        }
+        Ok(refreshed)
     })
 }
 

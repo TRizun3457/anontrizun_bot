@@ -5,6 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 
 import database as db
+from code_refresh import run_code_refresh_loop
 from config import ADMIN_ID, ALLOWED_CHAT_ID, BOT_TOKEN, DB_NAME, POTATO_UTC_OFFSET
 from handlers import admin, payments, user
 from handlers.user.potato import pass_markup
@@ -40,6 +41,7 @@ async def main() -> None:
         asyncio.create_task(
             potato_service.run_scheduler_loop(), name="potato-scheduler"
         ),
+        asyncio.create_task(run_code_refresh_loop(db, bot), name="code-refresh"),
     ]
 
     throttling_middleware = ThrottlingMiddleware(
