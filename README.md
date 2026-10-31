@@ -70,3 +70,10 @@ The bot also offers additional features, such as achievements, financial support
 Ошибка `while executing migration 3 … duplicate column name: kind` возникала у баз, где ранняя версия Python-кода сама применяла миграцию 3.
 Теперь схему создаёт только Rust (`sqlx`), а при запуске `schema_repair.py` автоматически чинит такую базу
 (делает копию `*.bak-<время>` и убирает лишние колонки; статистика игры сохраняется). После обновления пересоберите модуль: `maturin develop`.
+
+### Сборка Rust-модуля
+
+* `maturin develop` собирает **debug**-версию (медленная, много памяти). Для работы бота используйте
+  `maturin develop --release` (или `uv sync` с релизной сборкой): включены `lto = "thin"`, `codegen-units = 1`, `strip`.
+* Паники PyO3 превращаются в исключения Python, поэтому `panic = "abort"` в профиль намеренно не добавлен.
+* Для воспроизводимой сборки используйте `cargo build --locked` (файл `Cargo.lock` в репозитории).
