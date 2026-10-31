@@ -23,6 +23,13 @@ from .theme import fmt_duration, holder_text, poison_text
 logger = logging.getLogger(__name__)
 
 MAX_DELIVERY_ATTEMPTS = 40
+CHAT_LEVEL_ERRORS = (
+    "chat not found",
+    "member list is inaccessible",
+    "not a member",
+    "bot was kicked",
+    "bot is not a member",
+)
 EXPIRY_POLL_SECONDS = 15
 SCHEDULER_POLL_SECONDS = 30
 GROUP_COOLDOWN_SECONDS = 4 * 60 * 60
@@ -85,6 +92,7 @@ class PotatoService:
         self.bot = bot
         self.admin_id = admin_id
         self.strong_chance = STRONG_ROT_CHANCE
+        self._unverifiable_chats: set[int] = set()
         self._pass_markup = pass_markup or (lambda _game_id: None)
 
     async def _reachable(self, user_id: int, group_chat_id: int | None) -> bool:
@@ -92,21 +100,34 @@ class PotatoService:
             await self.bot.send_chat_action(user_id, "typing")
         except Exception:
             return False
-        if group_chat_id is not None and group_chat_id < 0:
-            try:
-                member = await self.bot.get_chat_member(group_chat_id, user_id)
-            except Exception:
+        if (
+            group_chat_id is None
+            or group_chat_id >= 0
+            or group_chat_id in self._unverifiable_chats
+        ):
+            return True
+        try:
+            member = await self.bot.get_chat_member(group_chat_id, user_id)
+        except Exception as exc:
+            text = str(exc).lower()
+            if any(marker in text for marker in CHAT_LEVEL_ERRORS):
+                self._unverifiable_chats.add(group_chat_id)
                 logger.warning(
-                    "potato: cannot verify membership for user %s in chat %s; "
-                    "make sure the bot is an administrator",
-                    user_id,
+                    "potato: бот не видит чат %s (%s). Проверьте ALLOWED_CHAT_ID и что "
+                    "бот добавлен в чат (лучше администратором). Проверка участия "
+                    "отключена, играют все пользователи бота.",
                     group_chat_id,
-                    exc_info=True,
+                    exc,
                 )
-                return False
-            if getattr(member, "status", None) in ("left", "kicked"):
-                return False
-        return True
+                return True
+            logger.warning(
+                "potato: cannot verify membership for user %s in chat %s",
+                user_id,
+                group_chat_id,
+                exc_info=True,
+            )
+            return False
+        return getattr(member, "status", None) not in ("left", "kicked")
 
     async def _pick_reachable(self, game: Game, exclude: set[int]) -> int | None:
         cands = await self.store.candidates(game.id, exclude, self.admin_id)

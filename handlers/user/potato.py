@@ -66,11 +66,7 @@ def _menu_kb(stats: dict, is_vip: bool, locked: bool = False) -> InlineKeyboardM
                     text="📲 Поделиться статистикой игры", switch_inline_query=""
                 )
             ],
-            [
-                InlineKeyboardButton(
-                    text="◀️ Назад в настройки", callback_data="settings_menu"
-                )
-            ],
+            [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="my_status")],
         ]
     )
 

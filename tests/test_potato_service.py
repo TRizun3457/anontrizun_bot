@@ -514,3 +514,39 @@ def test_holder_message_is_themed_with_deadline_and_vip_gold():
     text = bot.to(game.holder_id)[0]
     assert "Золотая гнилушка" in text and "❖" in text
     assert "Сгниёт в" in text
+
+
+class ChatMissingBot(FakeBot):
+    def __init__(self, message="Bad Request: chat not found"):
+        super().__init__()
+        self.message = message
+        self.member_calls = 0
+
+    async def get_chat_member(self, chat_id, user_id, **kw):
+        self.member_calls += 1
+        raise RuntimeError(self.message)
+
+
+def test_missing_chat_does_not_block_game_and_checks_only_once(caplog):
+    bot = ChatMissingBot()
+    svc, bot, _ = make({1: 0, 2: 0, 3: 0}, bot)
+    with caplog.at_level("WARNING"):
+        game = run(svc.start_game(-1002237560451, 99, 600))
+    assert game.holder_id in (1, 2, 3)
+    assert bot.member_calls == 1
+    warnings = [r for r in caplog.records if "не видит чат" in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].exc_info is None
+    run(svc.start_game(-1002237560451, 99, 600, kind="rot"))
+    assert bot.member_calls == 1
+
+
+def test_user_level_membership_errors_still_exclude_user():
+    class UserErrBot(FakeBot):
+        async def get_chat_member(self, chat_id, user_id, **kw):
+            if user_id == 1:
+                raise RuntimeError("Bad Request: user not found")
+            return SimpleNamespace(status="member")
+
+    svc, _, _ = make({1: 0, 2: 0}, UserErrBot())
+    for chat in (-5, -6, -7):
+        assert run(svc.start_game(chat, 99, 600)).holder_id == 2
