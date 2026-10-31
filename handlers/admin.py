@@ -9,6 +9,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database as db
 from config import ADMIN_ID
+from refunds import PendingRefunds, describe_payload, revoke_benefit
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -205,80 +206,196 @@ async def add_balance_cmd(message: types.Message) -> None:
     )
 
 
+REFUND_MODES = {
+    "take": True,
+    "забрать": True,
+    "keep": False,
+    "оставить": False,
+}
+
+pending_refunds = PendingRefunds()
+
+
+def refund_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💸 Вернуть звёзды и забрать покупку",
+                    callback_data=f"rf:take:{token}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💸 Только вернуть звёзды",
+                    callback_data=f"rf:keep:{token}",
+                )
+            ],
+            [InlineKeyboardButton(text="✖️ Отмена", callback_data=f"rf:cancel:{token}")],
+        ]
+    )
+
+
 @router.message(Command("refund"))
 async def refund_cmd(message: types.Message, bot: Bot) -> None:
     if not message.from_user or message.from_user.id != ADMIN_ID or not message.text:
         return
 
-    args = message.text.split(maxsplit=1)
+    args = message.text.split()
     if len(args) < 2:
         await message.answer(
             "⚠️ Пример использования:\n"
             "• <code>/refund STX_ID</code> — возврат конкретной транзакции\n"
-            "• <code>/refund USER_ID</code> — возврат всех транзакций пользователя",
+            "• <code>/refund USER_ID</code> — возврат всех транзакций пользователя\n"
+            "• добавьте <code>take</code> (забрать покупку) или <code>keep</code> "
+            "(только вернуть звёзды), чтобы не выбирать кнопкой",
             parse_mode=ParseMode.HTML,
         )
         return
 
     target = args[1].strip()
+    revoke: bool | None = None
+    if len(args) > 2:
+        revoke = REFUND_MODES.get(args[2].lower())
+        if revoke is None:
+            await message.answer(
+                "⚠️ Режим должен быть <code>take</code> или <code>keep</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
 
     if target.startswith("stx_") or not target.isdigit():
-        charge_id = target
-        payment = await db.get_payment_by_charge_id(charge_id)
-
+        payment = await db.get_payment_by_charge_id(target)
         if not payment:
             await message.answer(
-                f"❌ Платёж <code>{charge_id}</code> не найден в базе данных.",
+                f"❌ Платёж <code>{target}</code> не найден в базе данных.",
                 parse_mode=ParseMode.HTML,
             )
             return
-
         if payment.status == "refunded":
             await message.answer(
-                f"⚠️ Платёж <code>{charge_id}</code> уже был возвращён ранее.",
+                f"⚠️ Платёж <code>{target}</code> уже был возвращён ранее.",
                 parse_mode=ParseMode.HTML,
             )
             return
+        kind, value = "charge", target
+        summary = (
+            f"Платёж <code>{target}</code> пользователя "
+            f"<code>{payment.user_id}</code>: {describe_payload(payment.payload)}."
+        )
+    else:
+        user_id = int(target)
+        successful_payments = await db.get_success_charge_ids_by_user_id(user_id)
+        if not successful_payments:
+            await message.answer(
+                f"❌ У пользователя <code>{user_id}</code> нет успешных платежей для возврата.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        kind, value = "user", target
+        summary = (
+            f"Все успешные платежи пользователя <code>{user_id}</code> "
+            f"({len(successful_payments)} шт.)."
+        )
 
-        await process_single_refund(bot, message, payment.user_id, charge_id)
-        return
-
-    user_id = int(target)
-    successful_payments = await db.get_success_charge_ids_by_user_id(user_id)
-
-    if not successful_payments:
+    if revoke is None:
+        token = pending_refunds.add(kind, value)
         await message.answer(
-            f"❌ У пользователя <code>{user_id}</code> нет успешных платежей для возврата.",
+            f"{summary}\n\nЗабрать купленное при возврате?",
+            reply_markup=refund_keyboard(token),
             parse_mode=ParseMode.HTML,
         )
         return
+    await run_refund(bot, message, kind, value, revoke)
 
-    status_msg = await message.answer(
-        f"🔄 Начат процесс возврата для пользователя <code>{user_id}</code> ({len(successful_payments)} шт.)...",
-        parse_mode=ParseMode.HTML,
+
+@router.callback_query(F.data.startswith("rf:"))
+async def refund_choice(callback: types.CallbackQuery, bot: Bot) -> None:
+    if callback.from_user.id != ADMIN_ID or callback.data is None:
+        await callback.answer()
+        return
+    parts = callback.data.split(":")
+    if len(parts) != 3 or parts[1] not in ("take", "keep", "cancel"):
+        await callback.answer("⚠️ Некорректная кнопка.", show_alert=True)
+        return
+    mode, token = parts[1], parts[2]
+    entry = pending_refunds.pop(token)
+    if entry is None:
+        await callback.answer("Запрос устарел, повторите /refund.", show_alert=True)
+        return
+    message = callback.message if isinstance(callback.message, types.Message) else None
+    if message is not None:
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except TelegramAPIError:
+            logger.debug("cannot clear refund keyboard", exc_info=True)
+    if mode == "cancel":
+        await callback.answer("Отменено.")
+        return
+    await callback.answer("Выполняю возврат…")
+    await run_refund(bot, message, entry[0], entry[1], mode == "take")
+
+
+async def run_refund(
+    bot: Bot,
+    message: types.Message | None,
+    kind: str,
+    value: str,
+    revoke: bool,
+) -> None:
+    if kind == "charge":
+        payment = await db.get_payment_by_charge_id(value)
+        if not payment:
+            if message:
+                await message.answer(
+                    f"❌ Платёж <code>{value}</code> не найден.",
+                    parse_mode=ParseMode.HTML,
+                )
+            return
+        await process_single_refund(bot, message, payment.user_id, value, revoke)
+        return
+
+    user_id = int(value)
+    successful_payments = await db.get_success_charge_ids_by_user_id(user_id)
+    if not successful_payments:
+        if message:
+            await message.answer(
+                f"❌ У пользователя <code>{user_id}</code> нет успешных платежей для возврата.",
+                parse_mode=ParseMode.HTML,
+            )
+        return
+
+    status_msg = (
+        await message.answer(
+            f"🔄 Начат процесс возврата для пользователя <code>{user_id}</code> ({len(successful_payments)} шт.)...",
+            parse_mode=ParseMode.HTML,
+        )
+        if message
+        else None
     )
 
     success_count = 0
     fail_count = 0
-
     for charge_id in successful_payments:
-        is_success = await process_single_refund(
+        if await process_single_refund(
             bot=bot,
             message=None,
             user_id=user_id,
             charge_id=charge_id,
-        )
-        if is_success:
+            revoke=revoke,
+        ):
             success_count += 1
         else:
             fail_count += 1
 
-    await status_msg.edit_text(
-        f"📊 <b>Результат возврата средств для {user_id}:</b>\n\n"
-        f"✅ Успешно возвращено: <b>{success_count}</b>\n"
-        f"❌ Ошибок возврата: <b>{fail_count}</b>",
-        parse_mode=ParseMode.HTML,
-    )
+    if status_msg:
+        await status_msg.edit_text(
+            f"📊 <b>Результат возврата средств для {user_id}:</b>\n\n"
+            f"✅ Успешно возвращено: <b>{success_count}</b>\n"
+            f"❌ Ошибок возврата: <b>{fail_count}</b>\n"
+            + ("🧾 Покупки забраны." if revoke else "🧾 Покупки оставлены."),
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def process_single_refund(
@@ -286,6 +403,7 @@ async def process_single_refund(
     message: types.Message | None,
     user_id: int,
     charge_id: str,
+    revoke: bool = False,
 ) -> bool:
     is_updated = await db.set_payment_status_if_current(
         charge_id=charge_id,
@@ -307,14 +425,6 @@ async def process_single_refund(
             telegram_payment_charge_id=charge_id,
         )
         await db.set_payment_status_by_charge_id(charge_id=charge_id, status="refunded")
-
-        if message:
-            await message.answer(
-                f"✅ Возврат платежа <code>{charge_id}</code> для пользователя <code>{user_id}</code> выполнен успешно.",
-                parse_mode=ParseMode.HTML,
-            )
-        return True
-
     except TelegramAPIError as exc:
         logger.exception("Refund error via Telegram API for charge %s", charge_id)
         await db.set_payment_status_by_charge_id(
@@ -327,6 +437,34 @@ async def process_single_refund(
                 parse_mode=ParseMode.HTML,
             )
         return False
+
+    note = ""
+    if revoke:
+        payment = await db.get_payment_by_charge_id(charge_id)
+        try:
+            note = await revoke_benefit(
+                db, user_id, payment.payload if payment else None
+            )
+        except Exception:
+            logger.exception("Failed to revoke purchase for charge %s", charge_id)
+            note = "⚠️ Звёзды возвращены, но забрать покупку не удалось."
+        try:
+            await bot.send_message(
+                user_id,
+                "💸 Ваш платёж возвращён, покупка отменена."
+                if "не удалось" not in note
+                else "💸 Ваш платёж возвращён.",
+            )
+        except TelegramAPIError:
+            logger.debug("cannot notify %s about refund", user_id, exc_info=True)
+
+    if message:
+        await message.answer(
+            f"✅ Возврат платежа <code>{charge_id}</code> для пользователя <code>{user_id}</code> выполнен успешно."
+            + (f"\n🧾 {note}" if note else ""),
+            parse_mode=ParseMode.HTML,
+        )
+    return True
 
 
 @router.message(Command("broadcast"))

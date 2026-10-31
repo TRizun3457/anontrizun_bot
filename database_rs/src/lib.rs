@@ -147,6 +147,7 @@ fn database(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check_and_grant_achievements, m)?)?;
     m.add_function(wrap_pyfunction!(record_sent_message, m)?)?;
     m.add_function(wrap_pyfunction!(refresh_due_codes, m)?)?;
+    m.add_function(wrap_pyfunction!(revoke_purchase, m)?)?;
     m.add_function(wrap_pyfunction!(close_db, m)?)?;
     Ok(())
 }
@@ -1078,11 +1079,13 @@ fn increment_total_spent_stars(
 fn increment_answer_streak(py: Python<'_>, user_id: i64) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let state = get_state().await?;
-        sqlx::query("UPDATE users SET answer_streak = answer_streak + 1 WHERE user_id = ?")
-            .bind(user_id)
-            .execute(&state.pool)
-            .await
-            .map_err(db_err)?;
+        sqlx::query(
+            "UPDATE users SET answer_streak = answer_streak + 1, unanswered = 0 WHERE user_id = ?",
+        )
+        .bind(user_id)
+        .execute(&state.pool)
+        .await
+        .map_err(db_err)?;
         Ok(())
     })
 }
@@ -1196,11 +1199,13 @@ fn record_sent_message(
             .map_err(db_err)?;
         }
 
-        sqlx::query("UPDATE users SET sent_count = sent_count + 1 WHERE user_id = ?")
-            .bind(sender_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
+        sqlx::query(
+            "UPDATE users SET sent_count = sent_count + 1, answer_streak = CASE WHEN unanswered > 0 THEN 0 ELSE answer_streak END, unanswered = 1 WHERE user_id = ?",
+        )
+        .bind(sender_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
 
         let mut granted: Vec<String> = Vec::new();
         for (ach_id, condition) in [("bro_42", has_42), ("degrade_67", has_67)] {
@@ -1278,6 +1283,61 @@ fn refresh_due_codes(py: Python<'_>, now: i64) -> PyResult<Bound<'_, PyAny>> {
             refreshed.push((user_id, new_code));
         }
         Ok(refreshed)
+    })
+}
+
+#[pyfunction]
+fn revoke_purchase(
+    py: Python<'_>,
+    user_id: i64,
+    kind: String,
+    amount: i64,
+) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        let state = get_state().await?;
+        let revoked: i64 = match kind.as_str() {
+            "vip" => {
+                let res =
+                    sqlx::query("UPDATE users SET is_vip = 0 WHERE user_id = ? AND is_vip != 0")
+                        .bind(user_id)
+                        .execute(&state.pool)
+                        .await
+                        .map_err(db_err)?;
+                res.rows_affected() as i64
+            }
+            "air" => {
+                let res = sqlx::query(
+                    "UPDATE users SET air_purchased = air_purchased - 1 WHERE user_id = ? AND air_purchased > 0",
+                )
+                .bind(user_id)
+                .execute(&state.pool)
+                .await
+                .map_err(db_err)?;
+                res.rows_affected() as i64
+            }
+            "balance" => {
+                let mut tx = state.pool.begin().await.map_err(db_err)?;
+                let balance: Option<i64> =
+                    sqlx::query_scalar("SELECT balance FROM users WHERE user_id = ?")
+                        .bind(user_id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(db_err)?;
+                let take = balance.unwrap_or(0).min(amount.max(0)).max(0);
+                if take > 0 {
+                    sqlx::query("UPDATE users SET balance = balance - ? WHERE user_id = ?")
+                        .bind(take)
+                        .bind(user_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db_err)?;
+                }
+                tx.commit().await.map_err(db_err)?;
+                take
+            }
+            other => return Err(db_err(format!("unknown purchase kind: {other}"))),
+        };
+        Ok(revoked)
     })
 }
 
