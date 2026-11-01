@@ -141,6 +141,11 @@ async def handle_toggle_cats(
     await show_settings_menu(callback, potato_service)
 
 
+DOGS_OFF_TEXT = (
+    '🐕 Собакам тут не место! <a href="https://band.link/sob4ki">Им сюда</a>'
+)
+
+
 @router.callback_query(F.data == "settings_toggle_dogs")
 async def handle_toggle_dogs(
     callback: types.CallbackQuery, potato_service: PotatoService
@@ -157,6 +162,8 @@ async def handle_toggle_dogs(
         else "🐶 Собачки в оформлении выключены."
     )
     await show_settings_menu(callback, potato_service)
+    if not new_val and isinstance(callback.message, types.Message):
+        await callback.message.answer(DOGS_OFF_TEXT, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "settings_share_menu")
