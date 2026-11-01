@@ -141,9 +141,7 @@ async def handle_toggle_cats(
     await show_settings_menu(callback, potato_service)
 
 
-DOGS_OFF_TEXT = (
-    '🐕 <a href="https://band.link/sob4ki">Собакам тут не место!</a>'
-)
+DOGS_OFF_TEXT = '🐕 <a href="https://band.link/sob4ki">Собакам тут не место!</a>'
 
 
 @router.callback_query(F.data == "settings_toggle_dogs")
