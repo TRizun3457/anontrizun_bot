@@ -2,7 +2,7 @@ import random
 from collections.abc import Sequence
 
 
-def pick_pet_pair(
+def pick_pet_from(
     cats: Sequence[str],
     dogs: Sequence[str],
     show_cats: bool,
@@ -10,9 +10,11 @@ def pick_pet_pair(
     rng: random.Random | None = None,
 ) -> str:
     r = rng or random
-    parts: list[str] = []
+    pools: list[Sequence[str]] = []
     if show_cats and cats:
-        parts.append(r.choice(cats).strip())
+        pools.append(cats)
     if show_dogs and dogs:
-        parts.append(r.choice(dogs).strip())
-    return " ".join(parts)
+        pools.append(dogs)
+    if not pools:
+        return ""
+    return r.choice(r.choice(pools)).strip()
