@@ -10,12 +10,14 @@ from aiogram.types import (
 
 import database as db
 from config import ADMIN_ID
+from media_groups import GroupGate
 
 from .helpers import is_plain_message
 from .keyboards import get_banned_keyboard
 
 router = Router()
 logger = logging.getLogger(__name__)
+group_gate = GroupGate()
 
 
 @router.message(F.chat.type == "private", F.func(is_plain_message))
@@ -53,7 +55,10 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
         )
         return
 
-    is_priority = user_stats.priority_messages > 0
+    group_id = message.media_group_id
+    is_first = group_id is None or group_gate.first(user_id, group_id)
+
+    is_priority = is_first and user_stats.priority_messages > 0
     if is_priority:
         is_priority = await db.waste_priority_message(user_id)
 
@@ -68,7 +73,7 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
             ]
         )
 
-        if user_stats.is_vip:
+        if is_first and user_stats.is_vip:
             vip_banner = (
                 "═════════════════════\n💎 VIP-СООБЩЕНИЕ\n═════════════════════"
             )
@@ -104,6 +109,9 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
         )
     except Exception:
         logger.exception("Failed to record message from %s", user_id)
+
+    if not is_first:
+        return
 
     try:
         confirm_text = (
