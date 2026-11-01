@@ -54,3 +54,20 @@ CANCEL_WORDS = frozenset({"cancel", "отмена", "отменить"})
 def is_cancel_text(text: str | None) -> bool:
     word = (text or "").strip().lstrip("/").lower().split("@")[0]
     return word in CANCEL_WORDS
+
+
+class AlbumBuffer:
+    def __init__(self) -> None:
+        self._groups: dict[str, list[int]] = {}
+
+    def add(self, group_id: str, message_id: int) -> bool:
+        ids = self._groups.get(group_id)
+        if ids is None:
+            self._groups[group_id] = [message_id]
+            return True
+        if message_id not in ids:
+            ids.append(message_id)
+        return False
+
+    def pop(self, group_id: str) -> list[int]:
+        return sorted(self._groups.pop(group_id, []))

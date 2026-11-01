@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from aiogram import Bot, F, Router, types
@@ -12,6 +13,7 @@ from config import ADMIN_ID
 from potato.service import PotatoService
 from reports import (
     MAX_REPORT_LENGTH,
+    AlbumBuffer,
     ReportLimiter,
     format_report_header,
     is_cancel_text,
@@ -24,6 +26,8 @@ from .settings import show_settings_menu
 router = Router()
 logger = logging.getLogger(__name__)
 limiter = ReportLimiter()
+albums = AlbumBuffer()
+ALBUM_WAIT_SECONDS = 1.2
 
 
 class ReportState(StatesGroup):
@@ -60,7 +64,7 @@ async def start_report(callback: types.CallbackQuery, state: FSMContext) -> None
         callback,
         "🛠 <b>СООБЩИТЬ О ПРОБЛЕМЕ</b>\n"
         "─────────────────────\n"
-        "Опишите, что пошло не так, одним сообщением. Можно приложить скриншот, фото, видео или файл.\n\n"
+        "Опишите, что пошло не так, одним сообщением. Можно приложить фото, видео (в том числе несколько сразу) или файл, форматирование текста сохранится.\n\n"
         "⚠️ Это сообщение <b>не анонимное</b>: владелец бота увидит ваш профиль "
         "(имя, username и ID), чтобы ответить вам. Ваш анонимный код и ваши "
         "анонимки ему при этом <b>не раскрываются</b>.\n\n"
@@ -109,11 +113,21 @@ async def send_report(message: types.Message, state: FSMContext, bot: Bot) -> No
             reply_markup=cancel_keyboard(),
         )
         return
+    group_id = message.media_group_id
+    if group_id is not None and not albums.add(group_id, message.message_id):
+        return
     left = limiter.remaining(user.id)
     if left:
         await state.clear()
         await message.answer(f"⏳ Подождите {left} с. перед следующим сообщением.")
+        if group_id is not None:
+            albums.pop(group_id)
         return
+    if group_id is not None:
+        await asyncio.sleep(ALBUM_WAIT_SECONDS)
+        message_ids = albums.pop(group_id)
+    else:
+        message_ids = [message.message_id]
     await db.register_user(user.id)
     try:
         await bot.send_message(
@@ -121,7 +135,14 @@ async def send_report(message: types.Message, state: FSMContext, bot: Bot) -> No
             format_report_header(user.id, user.full_name, user.username),
             parse_mode=ParseMode.HTML,
         )
-        await message.copy_to(chat_id=ADMIN_ID)
+        if len(message_ids) == 1:
+            await message.copy_to(chat_id=ADMIN_ID)
+        else:
+            await bot.copy_messages(
+                chat_id=ADMIN_ID,
+                from_chat_id=message.chat.id,
+                message_ids=message_ids,
+            )
     except TelegramAPIError:
         logger.exception("Failed to deliver problem report from %s", user.id)
         await message.answer(

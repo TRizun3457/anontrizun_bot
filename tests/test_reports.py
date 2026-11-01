@@ -67,3 +67,16 @@ def test_cancel_text_variants():
         assert is_cancel_text(ok)
     for bad in (None, "", "не работает отмена платежа", "/start"):
         assert not is_cancel_text(bad)
+
+
+def test_album_buffer_collects_sorted_and_flags_first():
+    from reports import AlbumBuffer
+
+    buf = AlbumBuffer()
+    assert buf.add("g", 12) is True
+    assert buf.add("g", 10) is False
+    assert buf.add("g", 11) is False
+    assert buf.add("g", 11) is False
+    assert buf.pop("g") == [10, 11, 12]
+    assert buf.pop("g") == []
+    assert buf.add("g", 20) is True
