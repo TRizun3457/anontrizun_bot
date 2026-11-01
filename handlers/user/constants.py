@@ -9,6 +9,17 @@ CAT_KAOMOJI_LIST = [
     "(ฅ'ω'ฅ)",
 ]
 
+DOG_KAOMOJI_LIST = [
+    "U・ᴥ・U",
+    "(◕ᴥ◕ʋ)",
+    "∪･ω･∪",
+    "V●ᴥ●V",
+    "▼・ᴥ・▼",
+    "(U ᵔᴥᵔ U)",
+    "ᘛ⁐̤ᕐᐷ",
+    "(＾・ω・＾✿)",
+]
+
 VIS_FIELD_MAP = {
     "sent": "show_sent",
     "received": "show_received",

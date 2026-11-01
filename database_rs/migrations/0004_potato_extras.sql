@@ -1,0 +1,19 @@
+CREATE TABLE IF NOT EXISTS potato_extra (
+    user_id INTEGER PRIMARY KEY,
+    show_dogs INTEGER NOT NULL DEFAULT 1,
+    started INTEGER NOT NULL DEFAULT 0,
+    bought INTEGER NOT NULL DEFAULT 0,
+    share_received INTEGER NOT NULL DEFAULT 1,
+    share_passed INTEGER NOT NULL DEFAULT 1,
+    share_exploded INTEGER NOT NULL DEFAULT 1,
+    share_streak INTEGER NOT NULL DEFAULT 1,
+    share_achievements INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS potato_purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    item TEXT NOT NULL,
+    stars INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);

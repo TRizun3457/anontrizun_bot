@@ -15,6 +15,7 @@ from aiogram.types import (
 
 import database as db
 from config import ADMIN_ID
+from refunds import record_balance_purchase
 
 router = Router()
 logger = getLogger(__name__)
@@ -34,6 +35,7 @@ async def pay_with_balance_or_invoice(
                 "❌ Недостаточно средств на балансе.", show_alert=True
             )
             return
+        await record_balance_purchase(db, user_id, item_type, price)
         await db.increment_total_spent_stars(user_id, price)
         await db.grant_achievement(user_id, "first_donate")
         reply_text: str | None = None
@@ -246,6 +248,8 @@ async def process_apology_text(
         )
         return
     await state.clear()
+    if paid_by_balance:
+        await record_balance_purchase(db, user_id, "apology", 50)
     anon_code = await db.get_banned_anon_code_by_user_id(user_id)
     apology_text = (
         f"🙏 <b>ЗАЯВКА НА РАЗБАН (ОПЛАЧЕНО 50 ⭐️)</b>\n\n"

@@ -37,24 +37,10 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="💳 Пополнить баланс Stars", callback_data="deposit_menu"
+                    text="🥔 Гнилая картошка", callback_data="settings_potato"
                 )
             ],
-            [
-                InlineKeyboardButton(
-                    text="⭐ Приоритет (1 ⭐️)", callback_data="buy_priority"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="💎 VIP-Оформление (100 ⭐️)", callback_data="buy_vip"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="💨 Купить воздух (10 ⭐️)", callback_data="buy_air"
-                )
-            ],
+            [InlineKeyboardButton(text="🛒 Магазин", callback_data="main_shop")],
         ]
     )
 
@@ -74,7 +60,7 @@ def get_profile_actions_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="💳 Пополнить баланс Stars", callback_data="deposit_menu"
+                    text="🥔 Гнилая картошка", callback_data="settings_potato"
                 )
             ],
             [
@@ -82,20 +68,6 @@ def get_profile_actions_keyboard() -> InlineKeyboardMarkup:
                     text="📲 Поделиться статусом", switch_inline_query=""
                 )
             ],
-            [
-                InlineKeyboardButton(
-                    text="⭐ Купить приоритет (1 ⭐️)", callback_data="buy_priority"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="💎 VIP-Оформление (100 ⭐️)", callback_data="buy_vip"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="💨 Купить воздух (10 ⭐️)", callback_data="buy_air"
-                )
-            ],
+            [InlineKeyboardButton(text="🛒 Магазин", callback_data="main_shop")],
         ]
     )

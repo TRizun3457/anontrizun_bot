@@ -6,12 +6,12 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aiogram>=3.30.0",
-    "aiosqlite>=0.22.1",
     "python-dotenv>=1.2.2",
 ]
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0",
     "ruff>=0.16.0",
     "ty>=0.0.63",
 ]
@@ -23,3 +23,9 @@ build-backend = "maturin"
 [tool.maturin]
 manifest-path = "database_rs/Cargo.toml"
 module-name = "database"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"potato/service.py" = ["BLE001"]

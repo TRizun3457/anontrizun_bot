@@ -10,12 +10,14 @@ from aiogram.types import (
 
 import database as db
 from config import ADMIN_ID
+from media_groups import GroupGate
 
 from .helpers import is_plain_message
 from .keyboards import get_banned_keyboard
 
 router = Router()
 logger = logging.getLogger(__name__)
+group_gate = GroupGate()
 
 
 @router.message(F.chat.type == "private", F.func(is_plain_message))
@@ -53,9 +55,12 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
         )
         return
 
-    is_priority = user_stats.priority_messages > 0
+    group_id = message.media_group_id
+    is_first = group_id is None or group_gate.first(user_id, group_id)
+
+    is_priority = is_first and user_stats.priority_messages > 0
     if is_priority:
-        await db.waste_priority_message(user_id)
+        is_priority = await db.waste_priority_message(user_id)
 
     try:
         keyboard = InlineKeyboardMarkup(
@@ -68,7 +73,7 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
             ]
         )
 
-        if user_stats.is_vip:
+        if is_first and user_stats.is_vip:
             vip_banner = (
                 "═════════════════════\n💎 VIP-СООБЩЕНИЕ\n═════════════════════"
             )
@@ -91,24 +96,22 @@ async def forward_anonymous_msg(message: types.Message, bot: Bot) -> None:
         await message.answer("❌ Ошибка при отправке.", parse_mode=ParseMode.HTML)
         return
 
-    await db.add_message(
-        sent_msg.message_id,
-        user_id,
-        user_stats.anon_code,
-        is_priority,
-        message.message_id,
-    )
-    if is_priority:
-        await db.increment_priority_sent_count(user_id)
-    await db.increment_sent_count(user_id)
-
     msg_text = (message.text or message.caption or "").lower()
-    if "42" in msg_text:
-        await db.grant_achievement(user_id, "bro_42")
-    if "67" in msg_text:
-        await db.grant_achievement(user_id, "degrade_67")
+    try:
+        await db.record_sent_message(
+            sent_msg.message_id,
+            user_id,
+            user_stats.anon_code,
+            is_priority,
+            message.message_id,
+            "42" in msg_text,
+            "67" in msg_text,
+        )
+    except Exception:
+        logger.exception("Failed to record message from %s", user_id)
 
-    await db.check_and_grant_achievements(user_id)
+    if not is_first:
+        return
 
     try:
         confirm_text = (

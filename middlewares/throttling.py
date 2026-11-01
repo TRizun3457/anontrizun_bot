@@ -7,6 +7,8 @@ from aiogram import BaseMiddleware, Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message, TelegramObject
 
+from media_groups import GroupGate
+
 
 class ThrottlingMiddleware(BaseMiddleware):
     def __init__(
@@ -25,6 +27,7 @@ class ThrottlingMiddleware(BaseMiddleware):
 
         self._user_timeouts: dict[int, float] = {}
         self._user_notify_timeouts: dict[int, float] = {}
+        self._album_gate = GroupGate()
         self._cleanup_task: asyncio.Task[None] | None = None
 
     async def start(self, *args: Any, **kwargs: Any) -> None:
@@ -101,6 +104,10 @@ class ThrottlingMiddleware(BaseMiddleware):
                 return await handler(event, data)
 
         user_id = event.from_user.id
+        group_id = event.media_group_id
+        if group_id is not None and self._album_gate.known(user_id, group_id):
+            return await handler(event, data)
+
         current_time = time.monotonic()
         required_limit = self._get_rate_limit(event)
 
@@ -118,4 +125,6 @@ class ThrottlingMiddleware(BaseMiddleware):
             return None
 
         self._user_timeouts[user_id] = current_time
+        if group_id is not None:
+            self._album_gate.first(user_id, group_id)
         return await handler(event, data)

@@ -60,7 +60,7 @@ async def start_cmd(message: types.Message, command: CommandObject) -> None:
             "• <code>/banlist</code> — список забаненных кодов\n\n"
             "<b>Финансы и Рассылка:</b>\n"
             "• <code>/addbalance КОД|ID СУММА</code> — пополнить баланс Stars\n"
-            "• <code>/refund КОД|ID|STX_ID</code> — возврат звёзд\n"
+            "• <code>/refund КОД|ID|STX_ID</code> — возврат звёзд (с выбором: забрать покупку или нет)\n"
             "• <code>/broadcast</code> — рассылка сообщений пользователям"
         )
         await message.answer(admin_text, parse_mode=ParseMode.HTML)
