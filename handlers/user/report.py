@@ -4,6 +4,7 @@ from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database as db
@@ -23,6 +24,10 @@ from .settings import show_settings_menu
 router = Router()
 logger = logging.getLogger(__name__)
 limiter = ReportLimiter()
+
+
+class ReportState(StatesGroup):
+    waiting_for_text = State()
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
