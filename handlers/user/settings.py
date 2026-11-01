@@ -142,7 +142,7 @@ async def handle_toggle_cats(
 
 
 DOGS_OFF_TEXT = (
-    '🐕 Собакам тут не место! <a href="https://band.link/sob4ki">Им сюда</a>'
+    '🐕 <a href="https://band.link/sob4ki">Собакам тут не место!</a>'
 )
 
 
