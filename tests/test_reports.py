@@ -58,3 +58,12 @@ def test_length_limit():
     assert not is_too_long(None)
     assert not is_too_long("x" * MAX_REPORT_LENGTH)
     assert is_too_long("x" * (MAX_REPORT_LENGTH + 1))
+
+
+def test_cancel_text_variants():
+    from reports import is_cancel_text
+
+    for ok in ("/cancel", "cancel", " Отмена ", "/cancel@trizun_gay"):
+        assert is_cancel_text(ok)
+    for bad in (None, "", "не работает отмена платежа", "/start"):
+        assert not is_cancel_text(bad)

@@ -3,29 +3,26 @@ import logging
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database as db
 from config import ADMIN_ID
+from potato.service import PotatoService
 from reports import (
     MAX_REPORT_LENGTH,
     ReportLimiter,
     format_report_header,
+    is_cancel_text,
     is_too_long,
 )
 
 from .helpers import send_or_edit
+from .settings import show_settings_menu
 
 router = Router()
 logger = logging.getLogger(__name__)
 limiter = ReportLimiter()
-
-
-class ReportState(StatesGroup):
-    waiting_for_text = State()
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
@@ -40,6 +37,12 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
 async def start_report(callback: types.CallbackQuery, state: FSMContext) -> None:
     if callback.from_user is None:
         return
+    if callback.from_user.id == ADMIN_ID:
+        await callback.answer(
+            "Вы владелец бота — сообщать о проблеме самому себе не нужно.",
+            show_alert=True,
+        )
+        return
     left = limiter.remaining(callback.from_user.id)
     if left:
         await callback.answer(
@@ -52,32 +55,35 @@ async def start_report(callback: types.CallbackQuery, state: FSMContext) -> None
         callback,
         "🛠 <b>СООБЩИТЬ О ПРОБЛЕМЕ</b>\n"
         "─────────────────────\n"
-        "Опишите, что пошло не так, одним сообщением (можно приложить скриншот).\n\n"
+        "Опишите, что пошло не так, одним сообщением. Можно приложить скриншот, фото, видео или файл.\n\n"
         "⚠️ Это сообщение <b>не анонимное</b>: владелец бота увидит ваш профиль "
         "(имя, username и ID), чтобы ответить вам. Ваш анонимный код и ваши "
         "анонимки ему при этом <b>не раскрываются</b>.\n\n"
-        f"Максимум {MAX_REPORT_LENGTH} символов. Отмена: /cancel",
+        f"Максимум {MAX_REPORT_LENGTH} символов. Отмена: кнопка ниже или /cancel.",
         cancel_keyboard(),
     )
 
 
 @router.callback_query(F.data == "report_cancel", ReportState.waiting_for_text)
 async def cancel_report_button(
-    callback: types.CallbackQuery, state: FSMContext
+    callback: types.CallbackQuery, state: FSMContext, potato_service: PotatoService
 ) -> None:
     await state.clear()
     await callback.answer("Отменено.")
-    if isinstance(callback.message, types.Message):
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except TelegramAPIError:
-            logger.debug("cannot clear report keyboard", exc_info=True)
+    await show_settings_menu(callback, potato_service)
 
 
-@router.message(Command("cancel"), ReportState.waiting_for_text)
-async def cancel_report_command(message: types.Message, state: FSMContext) -> None:
+@router.message(
+    ReportState.waiting_for_text,
+    F.chat.type == "private",
+    F.func(lambda m: is_cancel_text(m.text)),
+)
+async def cancel_report_command(
+    message: types.Message, state: FSMContext, potato_service: PotatoService
+) -> None:
     await state.clear()
     await message.answer("✖️ Отправка сообщения о проблеме отменена.")
+    await show_settings_menu(message, potato_service)
 
 
 @router.message(
@@ -89,7 +95,8 @@ async def send_report(message: types.Message, state: FSMContext, bot: Bot) -> No
     user = message.from_user
     if user is None:
         return
-    if message.successful_payment or message.refunded_payment:
+    if user.id == ADMIN_ID or message.successful_payment or message.refunded_payment:
+        await state.clear()
         return
     if is_too_long(message.text or message.caption):
         await message.answer(

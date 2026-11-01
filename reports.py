@@ -46,3 +46,11 @@ def format_report_header(user_id: int, full_name: str, username: str | None) -> 
 
 def is_too_long(text: str | None) -> bool:
     return text is not None and len(text) > MAX_REPORT_LENGTH
+
+
+CANCEL_WORDS = frozenset({"cancel", "отмена", "отменить"})
+
+
+def is_cancel_text(text: str | None) -> bool:
+    word = (text or "").strip().lstrip("/").lower().split("@")[0]
+    return word in CANCEL_WORDS
