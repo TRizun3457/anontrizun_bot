@@ -28,12 +28,14 @@ async def show_status(
     banned = await db.is_banned(user_id)
 
     show_dogs = bool((await potato_service.store.get_stats(user_id))["show_dogs"])
-    pet = pick_pet(user_stats.is_vip, user_stats.show_vip_cats, show_dogs)
-    cat_str = f" {pet} " if pet else ""
+
+    def pet_str() -> str:
+        pet = pick_pet(user_stats.is_vip, user_stats.show_vip_cats, show_dogs)
+        return f" {pet} " if pet else ""
 
     code_spoiler = f"<tg-spoiler><code>{user_stats.anon_code}</code></tg-spoiler>"
     status_text = "🚫 Заблокирован" if banned else "✅ Активен"
-    vip_status = f"💎 VIP Подписчик{cat_str}" if user_stats.is_vip else "❌ Нет"
+    vip_status = f"💎 VIP Подписчик{pet_str()}" if user_stats.is_vip else "❌ Нет"
     ach_count = await db.get_user_achievements_count(user_id)
     total_ach_count = len(ACHIEVEMENTS)
 
@@ -55,11 +57,11 @@ async def show_status(
         f"└ <b>Куплено воздуха:</b> <code>{user_stats.air_purchased}</code> шт. 💨"
     )
     if user_stats.air_purchased > 0:
-        ach_block += f"\n└ <b>Оценка:</b> <i>Ну и воздухан...{cat_str}</i>"
+        ach_block += f"\n└ <b>Оценка:</b> <i>Ну и воздухан...{pet_str()}</i>"
 
     if user_stats.is_vip:
         top_block = (
-            f"✨ 👑 <b>VIP-ПРОФИЛЬ{cat_str}</b> 👑 \n"
+            f"✨ 👑 <b>VIP-ПРОФИЛЬ{pet_str()}</b> 👑 \n"
             "⚡️ <i>Премиум-статус активирован</i>"
         )
     else:

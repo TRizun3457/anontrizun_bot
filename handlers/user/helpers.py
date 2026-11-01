@@ -1,5 +1,3 @@
-import random
-
 from aiogram import types
 from aiogram.enums import ParseMode
 from aiogram.types import (
@@ -7,6 +5,7 @@ from aiogram.types import (
 )
 
 import database as db
+from pets import pick_pet_pair
 
 from .constants import CAT_KAOMOJI_LIST, DOG_KAOMOJI_LIST
 
@@ -33,12 +32,7 @@ async def send_or_edit(
 def pick_pet(is_vip: bool, show_cats: bool, show_dogs: bool) -> str:
     if not is_vip:
         return ""
-    pool: list[str] = []
-    if show_cats:
-        pool += CAT_KAOMOJI_LIST
-    if show_dogs:
-        pool += DOG_KAOMOJI_LIST
-    return random.choice(pool).strip() if pool else ""
+    return pick_pet_pair(CAT_KAOMOJI_LIST, DOG_KAOMOJI_LIST, show_cats, show_dogs)
 
 
 def get_share_preview_text(
