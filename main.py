@@ -43,7 +43,7 @@ async def main() -> None:
         asyncio.create_task(
             potato_service.run_scheduler_loop(), name="potato-scheduler"
         ),
-        asyncio.create_task(run_code_refresh_loop(db, bot), name="code-refresh"),
+        asyncio.create_task(run_code_refresh_loop(db), name="code-refresh"),
     ]
 
     throttling_middleware = ThrottlingMiddleware(

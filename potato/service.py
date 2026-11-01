@@ -93,6 +93,7 @@ class PotatoService:
         self.admin_id = admin_id
         self.strong_chance = STRONG_ROT_CHANCE
         self._unverifiable_chats: set[int] = set()
+        self._undeliverable_logged: set[int] = set()
         self._pass_markup = pass_markup or (lambda _game_id: None)
 
     async def _reachable(self, user_id: int, group_chat_id: int | None) -> bool:
@@ -143,10 +144,17 @@ class PotatoService:
                 chat_id, text, reply_markup=markup, parse_mode="HTML"
             )
             return True
-        except Exception:
-            logger.warning(
-                "potato: cannot deliver message to %s", chat_id, exc_info=True
-            )
+        except Exception as exc:
+            if any(marker in str(exc).lower() for marker in CHAT_LEVEL_ERRORS):
+                if chat_id not in self._undeliverable_logged:
+                    self._undeliverable_logged.add(chat_id)
+                    logger.warning(
+                        "potato: не удаётся отправить сообщение в %s (%s)", chat_id, exc
+                    )
+            else:
+                logger.warning(
+                    "potato: cannot deliver message to %s", chat_id, exc_info=True
+                )
             return False
 
     async def _notify_holder(self, game: Game) -> bool:
