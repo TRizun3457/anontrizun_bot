@@ -251,9 +251,14 @@ class PotatoService:
                 starter_id, await self.store.record_start(starter_id)
             )
         if announce and kind == "normal":
+            title = (
+                "Гнилая картошка запущена!"
+                if starter_id > 0
+                else "Гнилая картошка завелась сама!"
+            )
             await self._say(
                 chat_id,
-                "🥔 <b>Гнилая картошка запущена!</b>\n"
+                f"🥔 <b>{title}</b>\n"
                 "Случайный пользователь бота уже получил её анонимно. "
                 f"Время на передачу: {fmt_duration(game.duration_sec)}.",
             )

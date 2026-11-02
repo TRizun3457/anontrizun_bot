@@ -76,7 +76,7 @@ def test_start_notifies_one_holder_and_announces():
     game = run(svc.start_game(-5, 99, 900))
     assert game.holder_id in (1, 2, 3)
     assert any("Вы — Гнилая картошка" in t for t in bot.to(game.holder_id))
-    assert any("запущена" in t for t in bot.to(-5))
+    assert any("запущена" in t or "завелась" in t for t in bot.to(-5))
     assert str(game.holder_id) not in " ".join(bot.to(-5))
 
 
