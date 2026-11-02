@@ -1,12 +1,13 @@
 import logging
 
-from aiogram import F, Router, types
+from aiogram import Bot, F, Router, types
 from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command, CommandObject, Filter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database as db
+from commands import mention_matches
 from config import ADMIN_ID
 from potato.formatting import format_achievements, format_stats
 from potato.service import (
@@ -22,6 +23,13 @@ from refunds import record_balance_purchase
 from .helpers import pick_pet, send_or_edit
 
 router = Router()
+
+
+class MentionsThisBot(Filter):
+    async def __call__(self, message: types.Message, bot: Bot) -> bool:
+        return mention_matches(message.text, (await bot.me()).username)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -420,7 +428,9 @@ async def potata_private(
 
 
 @router.message(
-    Command("potata"), F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP})
+    Command("potata", ignore_mention=True),
+    MentionsThisBot(),
+    F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}),
 )
 async def potata_group(
     message: types.Message, command: CommandObject, potato_service: PotatoService
