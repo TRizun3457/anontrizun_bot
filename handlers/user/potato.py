@@ -7,8 +7,8 @@ from aiogram.filters import Command, CommandObject, Filter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database as db
-from commands import mention_matches
-from config import ADMIN_ID
+from commands import mention_matches, parse_usernames
+from config import ADMIN_ID, BOT_EXTRA_USERNAMES
 from potato.formatting import format_achievements, format_stats
 from potato.service import (
     GROUP_COOLDOWN_SECONDS,
@@ -23,14 +23,28 @@ from refunds import record_balance_purchase
 from .helpers import pick_pet, send_or_edit
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 class MentionsThisBot(Filter):
+    def __init__(self) -> None:
+        self._names: set[str] | None = None
+
+    async def _load(self, bot: Bot) -> set[str]:
+        me = await bot.me()
+        names = {me.username or ""} | set(parse_usernames(BOT_EXTRA_USERNAMES))
+        try:
+            chat = await bot.get_chat(me.id)
+            names |= set(getattr(chat, "active_usernames", None) or [])
+        except TelegramAPIError:
+            logger.debug("cannot load extra bot usernames", exc_info=True)
+        names.discard("")
+        return names
+
     async def __call__(self, message: types.Message, bot: Bot) -> bool:
-        return mention_matches(message.text, (await bot.me()).username)
-
-
-logger = logging.getLogger(__name__)
+        if self._names is None:
+            self._names = await self._load(bot)
+        return mention_matches(message.text, self._names)
 
 
 def pass_markup(game_id: int) -> InlineKeyboardMarkup:
