@@ -125,18 +125,10 @@ LAUNCH_PAID = "paid"
 def launch_text(
     source: str, duration_text: str, starter_name: str | None = None
 ) -> str:
-    tail = (
-        "Случайный пользователь бота уже получил её анонимно. "
-        f"Время на передачу: {duration_text}."
-    )
+    tail = f"Она уже у случайного игрока, на передачу есть {duration_text}."
     if source == LAUNCH_PAID:
-        return (
-            "💳 <b>Платный запуск!</b>\n"
-            f"Кто-то оплатил гнилую картошку звёздами. {tail}"
-        )
+        return f"💳 <b>Кто-то заплатил за картошку!</b>\n{tail}"
     if source == LAUNCH_MEMBER:
-        who = f"<b>{starter_name}</b>" if starter_name else "Участник группы"
-        return (
-            f"🥔 <b>Запуск от участника!</b>\n{who} запустил(а) гнилую картошку. {tail}"
-        )
-    return f"🤖 <b>Автозапуск!</b>\nГнилая картошка завелась сама. {tail}"
+        who = f"<b>{starter_name}</b>" if starter_name else "<b>Кто-то из группы</b>"
+        return f"🥔 {who} <b>запускает картошку!</b>\n{tail}"
+    return f"🥔 <b>Картошка пошла сама!</b>\nНикто не запускал, так вышло по расписанию. {tail}"

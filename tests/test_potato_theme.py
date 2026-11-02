@@ -64,8 +64,8 @@ def test_launch_text_separates_three_sources():
     auto = launch_text(LAUNCH_AUTO, "1 ч.")
     member = launch_text(LAUNCH_MEMBER, "1 ч.", "Вася")
     paid = launch_text(LAUNCH_PAID, "1 ч.")
-    assert "Автозапуск" in auto and "Вася" not in auto
-    assert "Запуск от участника" in member and "Вася" in member
-    assert "Платный запуск" in paid
+    assert "сама" in auto and "Вася" not in auto
+    assert "запускает картошку" in member and "Вася" in member
+    assert "заплатил" in paid
     assert len({auto, member, paid}) == 3
-    assert "Участник группы" in launch_text(LAUNCH_MEMBER, "1 ч.")
+    assert "Кто-то из группы" in launch_text(LAUNCH_MEMBER, "1 ч.")
