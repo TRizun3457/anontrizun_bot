@@ -115,3 +115,20 @@ def poison_text(is_vip: bool) -> str:
     if is_vip:
         return f"{head} 👑\n{body}\nДаже VIP-гниль не щадит!"
     return f"{head}\n{body}"
+
+
+LAUNCH_AUTO = "auto"
+LAUNCH_MEMBER = "member"
+LAUNCH_PAID = "paid"
+
+
+def launch_text(
+    source: str, duration_text: str, starter_name: str | None = None
+) -> str:
+    tail = f"Она уже у случайного игрока, на передачу есть {duration_text}."
+    if source == LAUNCH_PAID:
+        return f"💳 <b>Кто-то заплатил за картошку!</b>\n{tail}"
+    if source == LAUNCH_MEMBER:
+        who = f"<b>{starter_name}</b>" if starter_name else "<b>Кто-то из группы</b>"
+        return f"🥔 {who} <b>запускает картошку!</b>\n{tail}"
+    return f"🥔 <b>Картошка запустилась сама!</b>\n{tail}"

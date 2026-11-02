@@ -76,7 +76,7 @@ def test_start_notifies_one_holder_and_announces():
     game = run(svc.start_game(-5, 99, 900))
     assert game.holder_id in (1, 2, 3)
     assert any("Вы — Гнилая картошка" in t for t in bot.to(game.holder_id))
-    assert any("запущена" in t for t in bot.to(-5))
+    assert any("запускает" in t for t in bot.to(-5))
     assert str(game.holder_id) not in " ".join(bot.to(-5))
 
 
@@ -441,7 +441,7 @@ def test_paid_launch_creates_rot_potato_and_counts_start():
     game = run(svc.launch_paid(2))
     assert game.kind == "rot" and game.duration_sec == 3600
     assert run(svc.store.get_stats(2))["started"] == 1
-    assert any("запустил гнилую картошку" in t for _, t in bot.sent)
+    assert any("заплатил" in t for _, t in bot.sent)
     second = run(svc.launch_paid(2))
     assert second.id != game.id
 

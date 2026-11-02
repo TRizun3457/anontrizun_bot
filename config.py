@@ -31,6 +31,7 @@ if allowed_chat_id_raw:
 BOT_TOKEN: str = token
 ALLOWED_CHAT_LINK: str = os.getenv("ALLOWED_CHAT_LINK", "https://t.me/trizunchat")
 DB_NAME: str = os.getenv("DB_NAME", "bot_data.db")
+BOT_EXTRA_USERNAMES: str = os.getenv("BOT_EXTRA_USERNAMES", "")
 
 try:
     POTATO_UTC_OFFSET: int = int(os.getenv("POTATO_UTC_OFFSET", "7"))
