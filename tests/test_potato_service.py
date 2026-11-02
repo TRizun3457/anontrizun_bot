@@ -4,7 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from potato.service import PotatoService, fmt_duration
+from potato.service import (
+    AUTO_MAX_SECONDS,
+    AUTO_MIN_SECONDS,
+    GROUP_COOLDOWN_SECONDS,
+    ROT_MAX_LATENESS,
+    PotatoService,
+    fmt_duration,
+)
 from potato.store import PotatoError, PotatoStore
 from tests.test_potato_store import INIT_SQL, Clock
 
@@ -242,22 +249,46 @@ def test_tick_auto_starts_in_active_hours_only():
     assert run(svc.store.active_game(-7)) is None
     clock.t += 9 * 3600
     run(svc.tick())
-    assert run(svc.store.active_game(-7)) is not None
+    assert run(svc.store.active_game(-7, auto=True)) is not None
     nxt = run(svc.store.get_auto("auto"))
-    assert 4 * 3600 <= nxt - int(clock.t) <= 12 * 3600
-    assert run(svc.store.cooldown_remaining(-7, 4 * 3600)) > 0
+    assert AUTO_MIN_SECONDS <= nxt - int(clock.t) <= AUTO_MAX_SECONDS
+    assert run(svc.store.cooldown_remaining(-7, GROUP_COOLDOWN_SECONDS)) == 0
 
 
-def test_tick_schedules_first_auto_and_retries_when_busy():
+def test_tick_schedules_first_auto_and_retries_when_auto_busy():
     svc, _, clock = make({1: 0, 2: 0}, auto_chat_id=-7, utc_offset=0)
     clock.t = 1_700_000_000 - (1_700_000_000 % 86400) + 12 * 3600
     run(svc.tick())
     first = run(svc.store.get_auto("auto"))
     assert first is not None and first > clock.t
-    run(svc.start_game(-7, 99, 600))
+    run(svc.start_game(-7, 0, 600))
     run(svc.store.set_auto("auto", int(clock.t) - 1))
     run(svc.tick())
     assert run(svc.store.get_auto("auto")) == int(clock.t) + 3600
+
+
+def test_auto_and_member_games_are_independent():
+    svc, _, clock = make({1: 0, 2: 0, 3: 0, 4: 0}, auto_chat_id=-7, utc_offset=0)
+    clock.t = 1_700_000_000 - (1_700_000_000 % 86400) + 12 * 3600
+    run(
+        svc.start_game(
+            -7, 99, 600, cooldown_sec=GROUP_COOLDOWN_SECONDS, mark_cooldown=True
+        )
+    )
+    run(svc.store.set_auto("auto", int(clock.t) - 1))
+    run(svc.tick())
+    assert run(svc.store.active_game(-7, auto=True)) is not None
+    assert run(svc.store.active_game(-7, auto=False)) is not None
+    with pytest.raises(PotatoError):
+        run(svc.start_game(-7, 98, 600))
+    with pytest.raises(PotatoError):
+        run(svc.start_game(-7, 0, 600))
+
+
+def test_auto_game_does_not_trigger_member_cooldown():
+    svc, _, _ = make({1: 0, 2: 0}, auto_chat_id=-7, utc_offset=0)
+    run(svc.start_game(-7, 0, 600))
+    assert run(svc.store.cooldown_remaining(-7, GROUP_COOLDOWN_SECONDS)) == 0
 
 
 def test_tick_launches_planned_rot_spawns():
@@ -276,6 +307,53 @@ def test_tick_launches_planned_rot_spawns():
     assert sum("ДЕНЬ ГНИЕНИЯ" in t for t in bot.to(-7)) == 1
     run(svc.tick())
     assert len([g for g in run(svc.store.active_games()) if g.kind == "rot"]) == 3
+
+
+def _plan_due_spawns(svc, clock):
+    base = 1_700_000_000 - (1_700_000_000 % 86400)
+    clock.t = base + 19 * 3600
+    day = svc._local(int(clock.t)).date().isoformat()
+    run(svc.store.plan_rot_day(day, int(clock.t), base + 20 * 3600, 1.0))
+    run(svc.store.set_auto("auto", base + 10**7))
+    clock.t = base + 20 * 3600
+    return day
+
+
+def test_failed_rot_spawn_stays_pending_and_is_retried(caplog):
+    svc, _, clock = make({}, auto_chat_id=-7, utc_offset=0)
+    _plan_due_spawns(svc, clock)
+    with caplog.at_level("WARNING"):
+        run(svc.tick())
+    assert run(svc.store.active_games()) == []
+    assert len(run(svc.store.due_rot_spawns(10**6))) == 3
+    assert any("повторю позже" in r.getMessage() for r in caplog.records)
+    svc.store._keep.executescript(
+        "INSERT INTO users (user_id, is_vip) VALUES (1, 0);"
+        "INSERT INTO users (user_id, is_vip) VALUES (2, 0);"
+        "INSERT INTO users (user_id, is_vip) VALUES (3, 0);"
+    )
+    run(svc.tick())
+    assert len([g for g in run(svc.store.active_games()) if g.kind == "rot"]) == 3
+    assert run(svc.store.due_rot_spawns(10**6)) == []
+
+
+def test_rot_spawn_is_skipped_for_good_after_max_lateness(caplog):
+    svc, _, clock = make({}, auto_chat_id=-7, utc_offset=0)
+    _plan_due_spawns(svc, clock)
+    run(svc.tick())
+    clock.t += ROT_MAX_LATENESS + 1
+    with caplog.at_level("ERROR"):
+        run(svc.tick())
+    assert any("окончательно пропущена" in r.getMessage() for r in caplog.records)
+    assert run(svc.store.due_rot_spawns(10**6)) == []
+    assert run(svc.store.expire_rot_spawns(ROT_MAX_LATENESS)) == []
+
+
+def test_achievement_announcement_is_not_repeated():
+    svc, bot, _ = make({1: 0}, auto_chat_id=-7, utc_offset=0)
+    run(svc._announce_achievements(1, ["potato_first", "potato_first"]))
+    run(svc._announce_achievements(1, ["potato_first"]))
+    assert sum("Новое достижение" in t for t in bot.to(1)) == 1
 
 
 def test_tick_skips_when_day_decided_not_rot():

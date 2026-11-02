@@ -16,6 +16,10 @@ EVENTS_MIGRATION = MIGRATIONS_DIR / "0003_potato_events.sql"
 EVENTS_VERSION = 3
 EXTRAS_MIGRATION = MIGRATIONS_DIR / "0004_potato_extras.sql"
 INDEXES_MIGRATION = MIGRATIONS_DIR / "0005_potato_indexes.sql"
+SLOTS_MIGRATION = MIGRATIONS_DIR / "0008_potato_game_slots.sql"
+SPAWN_PENDING = 0
+SPAWN_LAUNCHED = 1
+SPAWN_SKIPPED = 2
 REQUIRED_TABLES = frozenset(
     {
         "potato_players",
@@ -182,6 +186,7 @@ class PotatoStore:
                 conn.executescript(EVENTS_MIGRATION.read_text(encoding="utf-8"))
             conn.executescript(EXTRAS_MIGRATION.read_text(encoding="utf-8"))
             conn.executescript(INDEXES_MIGRATION.read_text(encoding="utf-8"))
+            conn.executescript(SLOTS_MIGRATION.read_text(encoding="utf-8"))
 
         def verify(conn: sqlite3.Connection) -> None:
             tables = {
@@ -196,11 +201,18 @@ class PotatoStore:
                 if "potato_games" in tables
                 else set()
             )
-            if missing or "kind" not in columns:
+            indexes = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                )
+            }
+            stale = "idx_potato_one_normal_per_chat" in indexes
+            if missing or "kind" not in columns or stale:
                 raise RuntimeError(
                     "Схема игры «Гнилая картошка» не создана миграциями Rust-модуля. "
                     "Пересоберите модуль (maturin develop) и запустите бота снова. "
-                    f"Не хватает: {sorted(missing) or 'колонка potato_games.kind'}"
+                    f"Не хватает: {sorted(missing) or 'актуальные индексы potato_games (миграция 0008)'}"
                 )
 
         conn = self._conn()
@@ -477,14 +489,18 @@ class PotatoStore:
 
         return await self._run(fn)
 
-    async def active_game(self, chat_id: int) -> Game | None:
+    async def active_game(self, chat_id: int, auto: bool | None = None) -> Game | None:
+        sql = (
+            "SELECT * FROM potato_games WHERE chat_id = ? AND status = 'active' "
+            "AND kind = 'normal'"
+        )
+        if auto is True:
+            sql += " AND starter_id = 0"
+        elif auto is False:
+            sql += " AND starter_id <> 0"
+
         def fn(conn: sqlite3.Connection) -> Game | None:
-            return _game(
-                conn.execute(
-                    "SELECT * FROM potato_games WHERE chat_id = ? AND status = 'active' AND kind = 'normal'",
-                    (chat_id,),
-                ).fetchone()
-            )
+            return _game(conn.execute(sql, (chat_id,)).fetchone())
 
         return await self._run(fn)
 
@@ -509,12 +525,17 @@ class PotatoStore:
             exists = (
                 kind == "normal"
                 and conn.execute(
-                    "SELECT 1 FROM potato_games WHERE chat_id = ? AND status = 'active' AND kind = 'normal'",
-                    (chat_id,),
+                    "SELECT 1 FROM potato_games WHERE chat_id = ? AND status = 'active' "
+                    "AND kind = 'normal' AND (starter_id = 0) = (? = 0)",
+                    (chat_id, starter_id),
                 ).fetchone()
             )
             if exists:
-                raise PotatoError("В этом чате уже идёт игра в картошку.")
+                raise PotatoError(
+                    "Автоматическая картошка уже идёт в этом чате."
+                    if starter_id == 0
+                    else "В этом чате уже идёт игра в картошку."
+                )
             cur = conn.execute(
                 """INSERT INTO potato_games
                    (chat_id, starter_id, duration_sec, created_at, kind)
@@ -816,20 +837,32 @@ class PotatoStore:
 
         return await self._run(fn)
 
-    async def due_rot_spawns(self, max_age: int) -> list[tuple[str, int, bool]]:
-        def fn(conn: sqlite3.Connection) -> list[tuple[str, int, bool]]:
-            now = self._now()
+    async def expire_rot_spawns(self, max_age: int) -> list[tuple[str, int]]:
+        def fn(conn: sqlite3.Connection) -> list[tuple[str, int]]:
+            cutoff = self._now() - max_age
+            rows = conn.execute(
+                "SELECT day, spawn_at FROM potato_rot_spawns WHERE launched = ? AND spawn_at < ?",
+                (SPAWN_PENDING, cutoff),
+            ).fetchall()
             conn.execute(
-                "UPDATE potato_rot_spawns SET launched = 2 WHERE launched = 0 AND spawn_at < ?",
-                (now - max_age,),
+                "UPDATE potato_rot_spawns SET launched = ? WHERE launched = ? AND spawn_at < ?",
+                (SPAWN_SKIPPED, SPAWN_PENDING, cutoff),
             )
+            return [(r["day"], r["spawn_at"]) for r in rows]
+
+        return await self._run(fn)
+
+    async def due_rot_spawns(self, max_age: int) -> list[tuple[str, int, bool]]:
+        await self.expire_rot_spawns(max_age)
+
+        def fn(conn: sqlite3.Connection) -> list[tuple[str, int, bool]]:
             rows = conn.execute(
                 """SELECT day, spawn_at,
                    (SELECT COUNT(*) FROM potato_rot_spawns s2
-                    WHERE s2.day = s.day AND s2.launched = 1) AS done
+                    WHERE s2.day = s.day AND s2.launched = ?) AS done
                    FROM potato_rot_spawns s
-                   WHERE launched = 0 AND spawn_at <= ? ORDER BY spawn_at""",
-                (now,),
+                   WHERE launched = ? AND spawn_at <= ? ORDER BY spawn_at""",
+                (SPAWN_LAUNCHED, SPAWN_PENDING, self._now()),
             ).fetchall()
             return [(r["day"], r["spawn_at"], r["done"] == 0) for r in rows]
 
@@ -838,8 +871,8 @@ class PotatoStore:
     async def mark_spawn_launched(self, day: str, spawn_at: int) -> None:
         def fn(conn: sqlite3.Connection) -> None:
             conn.execute(
-                "UPDATE potato_rot_spawns SET launched = 1 WHERE day = ? AND spawn_at = ?",
-                (day, spawn_at),
+                "UPDATE potato_rot_spawns SET launched = ? WHERE day = ? AND spawn_at = ?",
+                (SPAWN_LAUNCHED, day, spawn_at),
             )
 
         await self._run(fn)
