@@ -56,3 +56,16 @@ def test_tree_layout():
 
     assert tree(["a"]) == "╺ a"
     assert tree(["a", "b", "c"]) == "┌ a\n├ b\n└ c"
+
+
+def test_launch_text_separates_three_sources():
+    from potato.theme import LAUNCH_AUTO, LAUNCH_MEMBER, LAUNCH_PAID, launch_text
+
+    auto = launch_text(LAUNCH_AUTO, "1 ч.")
+    member = launch_text(LAUNCH_MEMBER, "1 ч.", "Вася")
+    paid = launch_text(LAUNCH_PAID, "1 ч.")
+    assert "Автозапуск" in auto and "Вася" not in auto
+    assert "Запуск от участника" in member and "Вася" in member
+    assert "Платный запуск" in paid
+    assert len({auto, member, paid}) == 3
+    assert "Участник группы" in launch_text(LAUNCH_MEMBER, "1 ч.")

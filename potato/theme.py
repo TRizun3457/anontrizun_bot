@@ -115,3 +115,28 @@ def poison_text(is_vip: bool) -> str:
     if is_vip:
         return f"{head} 👑\n{body}\nДаже VIP-гниль не щадит!"
     return f"{head}\n{body}"
+
+
+LAUNCH_AUTO = "auto"
+LAUNCH_MEMBER = "member"
+LAUNCH_PAID = "paid"
+
+
+def launch_text(
+    source: str, duration_text: str, starter_name: str | None = None
+) -> str:
+    tail = (
+        "Случайный пользователь бота уже получил её анонимно. "
+        f"Время на передачу: {duration_text}."
+    )
+    if source == LAUNCH_PAID:
+        return (
+            "💳 <b>Платный запуск!</b>\n"
+            f"Кто-то оплатил гнилую картошку звёздами. {tail}"
+        )
+    if source == LAUNCH_MEMBER:
+        who = f"<b>{starter_name}</b>" if starter_name else "Участник группы"
+        return (
+            f"🥔 <b>Запуск от участника!</b>\n{who} запустил(а) гнилую картошку. {tail}"
+        )
+    return f"🤖 <b>Автозапуск!</b>\nГнилая картошка завелась сама. {tail}"

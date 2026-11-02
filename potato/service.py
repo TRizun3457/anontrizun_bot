@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import html
 import logging
 import random
 from collections.abc import Callable
@@ -18,7 +19,15 @@ from .store import (
     PotatoStore,
     random_duration,
 )
-from .theme import fmt_duration, holder_text, poison_text
+from .theme import (
+    LAUNCH_AUTO,
+    LAUNCH_MEMBER,
+    LAUNCH_PAID,
+    fmt_duration,
+    holder_text,
+    launch_text,
+    poison_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +232,7 @@ class PotatoService:
         cooldown_sec: int = 0,
         mark_cooldown: bool = False,
         announce: bool = True,
+        starter_name: str | None = None,
     ) -> Game:
         if cooldown_sec > 0:
             left = await self.store.cooldown_remaining(chat_id, cooldown_sec)
@@ -251,16 +261,14 @@ class PotatoService:
                 starter_id, await self.store.record_start(starter_id)
             )
         if announce and kind == "normal":
-            title = (
-                "Гнилая картошка запущена!"
-                if starter_id > 0
-                else "Гнилая картошка завелась сама!"
-            )
+            source = LAUNCH_MEMBER if starter_id > 0 else LAUNCH_AUTO
             await self._say(
                 chat_id,
-                f"🥔 <b>{title}</b>\n"
-                "Случайный пользователь бота уже получил её анонимно. "
-                f"Время на передачу: {fmt_duration(game.duration_sec)}.",
+                launch_text(
+                    source,
+                    fmt_duration(game.duration_sec),
+                    html.escape(starter_name) if starter_name else None,
+                ),
             )
         return game
 
@@ -285,9 +293,7 @@ class PotatoService:
             self.auto_chat_id, buyer_id, ROT_DURATION, kind="rot", announce=False
         )
         await self._say(
-            self.auto_chat_id,
-            "🥔💀 <b>Кто-то запустил гнилую картошку!</b>\n"
-            f"Она уже у случайного пользователя. Время на передачу: {fmt_duration(ROT_DURATION)}.",
+            self.auto_chat_id, launch_text(LAUNCH_PAID, fmt_duration(ROT_DURATION))
         )
         return game
 

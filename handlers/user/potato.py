@@ -464,6 +464,7 @@ async def _start(
             duration,
             cooldown_sec=0 if admin else GROUP_COOLDOWN_SECONDS,
             mark_cooldown=not admin,
+            starter_name=message.from_user.full_name,
         )
     except PotatoError as exc:
         await message.answer(f"🥔 {exc}")
