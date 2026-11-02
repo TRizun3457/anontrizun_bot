@@ -131,4 +131,4 @@ def launch_text(
     if source == LAUNCH_MEMBER:
         who = f"<b>{starter_name}</b>" if starter_name else "<b>Кто-то из группы</b>"
         return f"🥔 {who} <b>запускает картошку!</b>\n{tail}"
-    return f"🥔 <b>Картошка пошла сама!</b>\nНикто не запускал, так вышло по расписанию. {tail}"
+    return f"🥔 <b>Картошка запустилась сама!</b>\nНикто её не запускал, это просто случайность. {tail}"
