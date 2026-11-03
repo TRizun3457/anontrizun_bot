@@ -2,6 +2,12 @@ import asyncio
 import contextlib
 import logging
 
+logging.basicConfig(level=logging.INFO)
+
+import rust_build
+
+rust_build.ensure_fresh_build()
+
 from aiogram import Bot, Dispatcher
 
 import database as db
@@ -16,7 +22,6 @@ from potato.store import PotatoStore
 from resilience import ErrorGuardMiddleware, RetrySession
 from schema_repair import repair_legacy_schema
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
