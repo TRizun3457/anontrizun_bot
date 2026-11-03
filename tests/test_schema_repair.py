@@ -92,5 +92,11 @@ def test_store_verify_mode_requires_schema_and_accepts_full_schema(tmp_path):
     ):
         conn.executescript(sql(name))
     conn.close()
+    with pytest.raises(RuntimeError) as stale:
+        asyncio.run(PotatoStore(full).init(apply_migrations=False))
+    assert "0008" in str(stale.value)
+    conn = sqlite3.connect(full)
+    conn.executescript(sql("0008_potato_game_slots.sql"))
+    conn.close()
     store = PotatoStore(full)
     asyncio.run(store.init(apply_migrations=False))

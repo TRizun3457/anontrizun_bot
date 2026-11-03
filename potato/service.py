@@ -41,9 +41,9 @@ CHAT_LEVEL_ERRORS = (
 )
 EXPIRY_POLL_SECONDS = 15
 SCHEDULER_POLL_SECONDS = 30
-GROUP_COOLDOWN_SECONDS = 4 * 60 * 60
-AUTO_MIN_SECONDS = 4 * 60 * 60
-AUTO_MAX_SECONDS = 12 * 60 * 60
+GROUP_COOLDOWN_SECONDS = 2 * 60 * 60
+AUTO_MIN_SECONDS = 10 * 60 * 60
+AUTO_MAX_SECONDS = 30 * 60 * 60
 AUTO_RETRY_SECONDS = 60 * 60
 ROT_DAY_PROBABILITY = 0.1
 STRONG_ROT_PRICE = 142
@@ -57,6 +57,7 @@ STRONG_ANNOUNCE = (
     "пользователей бота. На передачу — час, как в день гниения. Берегитесь! 🥔💀"
 )
 ROT_MAX_LATENESS = 2 * 60 * 60
+SPAWN_LOG_EVERY = 20
 ACTIVE_FROM_HOUR = 10
 ACTIVE_TO_HOUR = 21
 
@@ -103,6 +104,8 @@ class PotatoService:
         self.strong_chance = STRONG_ROT_CHANCE
         self._unverifiable_chats: set[int] = set()
         self._undeliverable_logged: set[int] = set()
+        self._spawn_attempts: dict[tuple[str, int], int] = {}
+        self._announced: set[tuple[int, str]] = set()
         self._pass_markup = pass_markup or (lambda _game_id: None)
 
     async def _reachable(self, user_id: int, group_chat_id: int | None) -> bool:
@@ -217,10 +220,14 @@ class PotatoService:
         return None
 
     async def _announce_achievements(self, user_id: int, ids: list[str]) -> None:
-        if ids:
-            await self._say(
-                user_id, "🏆 <b>Новое достижение игры!</b>\n" + fmt_achievements(ids)
-            )
+        fresh = [a for a in dict.fromkeys(ids) if (user_id, a) not in self._announced]
+        if not fresh:
+            return
+        self._announced.update((user_id, a) for a in fresh)
+        if not await self._say(
+            user_id, "🏆 <b>Новое достижение игры!</b>\n" + fmt_achievements(fresh)
+        ):
+            self._announced.difference_update((user_id, a) for a in fresh)
 
     async def start_game(
         self,
@@ -353,6 +360,54 @@ class PotatoService:
     def _in_active_hours(self, ts: int) -> bool:
         return ACTIVE_FROM_HOUR <= self._local(ts).hour < ACTIVE_TO_HOUR
 
+    async def _launch_planned_spawns(self) -> None:
+        for day, spawn_at in await self.store.expire_rot_spawns(ROT_MAX_LATENESS):
+            attempts = self._spawn_attempts.pop((day, spawn_at), 0)
+            logger.error(
+                "potato: картошка дня гниения %s (на %s) окончательно пропущена: "
+                "попыток запуска: %s (0 — бот был выключен или планировщик не успел)",
+                day,
+                self._local(spawn_at).strftime("%H:%M"),
+                attempts,
+            )
+        first_in_batch = True
+        for day, spawn_at, is_first in await self.store.due_rot_spawns(
+            ROT_MAX_LATENESS
+        ):
+            key = (day, spawn_at)
+            try:
+                await self.start_game(
+                    self.auto_chat_id,
+                    0,
+                    ROT_DURATION,
+                    kind="rot",
+                    announce=False,
+                )
+            except Exception as exc:
+                attempts = self._spawn_attempts.get(key, 0) + 1
+                self._spawn_attempts[key] = attempts
+                if attempts == 1 or attempts % SPAWN_LOG_EVERY == 0:
+                    logger.warning(
+                        "potato: не удалось запустить картошку дня гниения %s "
+                        "(попытка %s, повторю позже): %s",
+                        day,
+                        attempts,
+                        exc,
+                        exc_info=not isinstance(exc, PotatoError),
+                    )
+                continue
+            attempts = self._spawn_attempts.pop(key, 0) + 1
+            if attempts > 1:
+                logger.info(
+                    "potato: картошка дня гниения %s запущена с попытки %s",
+                    day,
+                    attempts,
+                )
+            await self.store.mark_spawn_launched(day, spawn_at)
+            if is_first and first_in_batch:
+                await self._say(self.auto_chat_id, ROT_ANNOUNCE)
+            first_in_batch = False
+
     async def tick(self) -> None:
         now = self.store.now()
         local = self._local(now)
@@ -373,26 +428,7 @@ class PotatoService:
                 except Exception:
                     logger.exception("potato: strong rot roll failed")
 
-        first_in_batch = True
-        for day, spawn_at, is_first in await self.store.due_rot_spawns(
-            ROT_MAX_LATENESS
-        ):
-            try:
-                await self.start_game(
-                    self.auto_chat_id,
-                    0,
-                    ROT_DURATION,
-                    kind="rot",
-                    announce=False,
-                )
-                if is_first and first_in_batch:
-                    await self._say(self.auto_chat_id, ROT_ANNOUNCE)
-                first_in_batch = False
-            except PotatoError:
-                logger.info("potato: rot spawn skipped, no available players")
-            except Exception:
-                logger.exception("potato: rot spawn failed")
-            await self.store.mark_spawn_launched(day, spawn_at)
+        await self._launch_planned_spawns()
 
         next_at = await self.store.get_auto("auto")
         if next_at is None:
@@ -404,7 +440,7 @@ class PotatoService:
         if now < next_at or not self._in_active_hours(now):
             return
         retry = now + AUTO_RETRY_SECONDS
-        if await self.store.active_game(self.auto_chat_id) is not None:
+        if await self.store.active_game(self.auto_chat_id, auto=True) is not None:
             await self.store.set_auto("auto", retry)
             return
         try:
@@ -412,7 +448,6 @@ class PotatoService:
                 self.auto_chat_id,
                 0,
                 random_duration(self._rng),
-                mark_cooldown=True,
             )
         except PotatoError:
             await self.store.set_auto("auto", retry)
