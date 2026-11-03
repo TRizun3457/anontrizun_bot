@@ -28,4 +28,5 @@ module-name = "database"
 testpaths = ["tests"]
 
 [tool.ruff.lint.per-file-ignores]
+"main.py" = ["E402"]
 "potato/service.py" = ["BLE001"]
