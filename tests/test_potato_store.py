@@ -63,11 +63,13 @@ def test_duration_bounds():
         assert MIN_DURATION <= random_duration() <= MAX_DURATION
 
 
-def test_single_active_game_per_chat():
+def test_single_auto_game_but_many_member_games_per_chat():
     store, _ = make_store({1: 0})
     run(store.create_game(-100, 1, 600))
+    run(store.create_game(-100, 2, 600))
+    run(store.create_game(-100, 0, 600))
     with pytest.raises(PotatoError):
-        run(store.create_game(-100, 1, 600))
+        run(store.create_game(-100, 0, 600))
     run(store.create_game(-200, 1, 600))
 
 

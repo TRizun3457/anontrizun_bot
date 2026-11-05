@@ -17,6 +17,7 @@ EVENTS_VERSION = 3
 EXTRAS_MIGRATION = MIGRATIONS_DIR / "0004_potato_extras.sql"
 INDEXES_MIGRATION = MIGRATIONS_DIR / "0005_potato_indexes.sql"
 SLOTS_MIGRATION = MIGRATIONS_DIR / "0008_potato_game_slots.sql"
+MANY_MIGRATION = MIGRATIONS_DIR / "0009_potato_many_member_games.sql"
 SPAWN_PENDING = 0
 SPAWN_LAUNCHED = 1
 SPAWN_SKIPPED = 2
@@ -187,6 +188,7 @@ class PotatoStore:
             conn.executescript(EXTRAS_MIGRATION.read_text(encoding="utf-8"))
             conn.executescript(INDEXES_MIGRATION.read_text(encoding="utf-8"))
             conn.executescript(SLOTS_MIGRATION.read_text(encoding="utf-8"))
+            conn.executescript(MANY_MIGRATION.read_text(encoding="utf-8"))
 
         def verify(conn: sqlite3.Connection) -> None:
             tables = {
@@ -207,12 +209,15 @@ class PotatoStore:
                     "SELECT name FROM sqlite_master WHERE type = 'index'"
                 )
             }
-            stale = "idx_potato_one_normal_per_chat" in indexes
+            stale = bool(
+                indexes
+                & {"idx_potato_one_normal_per_chat", "idx_potato_one_member_per_chat"}
+            )
             if missing or "kind" not in columns or stale:
                 raise RuntimeError(
                     "Схема игры «Гнилая картошка» не создана миграциями Rust-модуля. "
                     "Пересоберите модуль (maturin develop) и запустите бота снова. "
-                    f"Не хватает: {sorted(missing) or 'актуальные индексы potato_games (миграция 0008)'}"
+                    f"Не хватает: {sorted(missing) or 'актуальные индексы potato_games (миграции 0008–0009)'}"
                 )
 
         conn = self._conn()
@@ -469,12 +474,22 @@ class PotatoStore:
                     "SELECT user_id FROM potato_history WHERE game_id = ?", (game_id,)
                 )
             }
+            busy = {
+                r["holder_id"]
+                for r in conn.execute(
+                    "SELECT holder_id FROM potato_games "
+                    "WHERE status = 'active' AND holder_id IS NOT NULL AND id <> ?",
+                    (game_id,),
+                )
+            }
             fresh = self._candidates(conn, seen | extra_exclude, admin_id)
             if fresh:
                 self._rng.shuffle(fresh)
+                fresh.sort(key=lambda uid: uid in busy)
                 return fresh
             again = self._candidates(conn, extra_exclude, admin_id)
             self._rng.shuffle(again)
+            again.sort(key=lambda uid: uid in busy)
             return again
 
         return await self._run(fn)
@@ -524,18 +539,15 @@ class PotatoStore:
         def fn(conn: sqlite3.Connection) -> Game:
             exists = (
                 kind == "normal"
+                and starter_id == 0
                 and conn.execute(
                     "SELECT 1 FROM potato_games WHERE chat_id = ? AND status = 'active' "
-                    "AND kind = 'normal' AND (starter_id = 0) = (? = 0)",
-                    (chat_id, starter_id),
+                    "AND kind = 'normal' AND starter_id = 0",
+                    (chat_id,),
                 ).fetchone()
             )
             if exists:
-                raise PotatoError(
-                    "Автоматическая картошка уже идёт в этом чате."
-                    if starter_id == 0
-                    else "В этом чате уже идёт игра в картошку."
-                )
+                raise PotatoError("Автоматическая картошка уже идёт в этом чате.")
             cur = conn.execute(
                 """INSERT INTO potato_games
                    (chat_id, starter_id, duration_sec, created_at, kind)

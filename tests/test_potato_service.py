@@ -279,10 +279,33 @@ def test_auto_and_member_games_are_independent():
     run(svc.tick())
     assert run(svc.store.active_game(-7, auto=True)) is not None
     assert run(svc.store.active_game(-7, auto=False)) is not None
-    with pytest.raises(PotatoError):
-        run(svc.start_game(-7, 98, 600))
+    run(svc.start_game(-7, 98, 600))
+    assert len([g for g in run(svc.store.active_games()) if g.kind == "normal"]) == 3
     with pytest.raises(PotatoError):
         run(svc.start_game(-7, 0, 600))
+
+
+def test_members_can_launch_every_two_hours_while_previous_is_active():
+    svc, _, clock = make({1: 0, 2: 0, 3: 0, 4: 0}, auto_chat_id=-7, utc_offset=0)
+    first = run(
+        svc.start_game(
+            -7, 11, 600, cooldown_sec=GROUP_COOLDOWN_SECONDS, mark_cooldown=True
+        )
+    )
+    with pytest.raises(PotatoError):
+        run(
+            svc.start_game(
+                -7, 12, 600, cooldown_sec=GROUP_COOLDOWN_SECONDS, mark_cooldown=True
+            )
+        )
+    clock.t += GROUP_COOLDOWN_SECONDS + 1
+    second = run(
+        svc.start_game(
+            -7, 12, 600, cooldown_sec=GROUP_COOLDOWN_SECONDS, mark_cooldown=True
+        )
+    )
+    assert first.id != second.id
+    assert first.holder_id != second.holder_id
 
 
 def test_auto_game_does_not_trigger_member_cooldown():
