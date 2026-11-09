@@ -165,6 +165,7 @@ SHARE_LABELS = {
     "share_passed": "✅ Отражено",
     "share_exploded": "☠️ Сгнило",
     "share_streak": "🔥 Серия",
+    "share_fastest": "⚡ Скорость",
     "share_achievements": "🏆 Достижения",
 }
 
@@ -185,7 +186,7 @@ async def _show_share_menu(
         inline_keyboard=[
             rows[:2],
             rows[2:4],
-            rows[4:],
+            rows[4:6],
             [
                 InlineKeyboardButton(
                     text="🚀 Проверить и поделиться", switch_inline_query=""

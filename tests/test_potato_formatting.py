@@ -65,3 +65,23 @@ def test_achievements_screen_marks_unlocked_and_uses_poison_names():
     assert "✅ 🥔 Первая картошка" in text
     assert "Отравился" in text and "Бабах" not in text
     assert "❖" in text
+
+
+def test_share_includes_fastest_pass_and_vip_can_hide_it():
+    stats = {**STATS, "fastest_pass_sec": 9, "share_fastest": 1}
+    assert "Самая быстрая передача: <b>9 с.</b>" in build_share_text(stats, False)
+    assert "Самая быстрая передача" in build_share_text(stats, True)
+    hidden = {**stats, "share_fastest": 0}
+    assert "Самая быстрая передача" not in build_share_text(hidden, True)
+    assert "Самая быстрая передача" in build_share_text(hidden, False)
+
+
+def test_share_skips_fastest_when_never_passed():
+    stats = {**STATS, "fastest_pass_sec": None, "share_fastest": 1}
+    assert "быстрая" not in build_share_text(stats, False)
+
+
+def test_fastest_is_a_toggleable_share_field():
+    from potato.store import SHARE_FIELDS
+
+    assert "share_fastest" in SHARE_FIELDS

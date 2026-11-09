@@ -12,7 +12,12 @@ from potato.service import (
     PotatoService,
     fmt_duration,
 )
-from potato.store import PotatoError, PotatoStore
+from potato.store import (
+    ROT_MAX_DURATION,
+    ROT_MIN_DURATION,
+    PotatoError,
+    PotatoStore,
+)
 from tests.test_potato_store import INIT_SQL, Clock
 
 
@@ -105,7 +110,7 @@ def test_admin_private_game_uses_global_pool_without_membership_check():
 
 
 def test_start_without_players_cleans_up():
-    svc, _, _ = make({99: 0})
+    svc, _, _ = make({})
     with pytest.raises(PotatoError):
         run(svc.start_game(-1, 99, 600))
     assert run(svc.store.active_game(-1)) is None
@@ -183,7 +188,7 @@ def test_group_cooldown_blocks_second_start_but_not_after_4h():
 
 
 def test_failed_start_does_not_consume_cooldown():
-    svc, _, _ = make({99: 0})
+    svc, _, _ = make({})
     with pytest.raises(PotatoError):
         run(svc.start_game(-1, 5, 600, cooldown_sec=4 * 3600, mark_cooldown=True))
     assert run(svc.store.cooldown_remaining(-1, 4 * 3600)) == 0
@@ -204,11 +209,13 @@ def test_left_players_get_no_notifications():
     assert bot.to(1) == []
 
 
-def test_rot_day_launches_three_parallel_potatoes():
+def test_rot_day_launches_three_parallel_potatoes(monkeypatch):
+    monkeypatch.setattr("potato.service.roll_spawn_count", lambda rng: 3)
     svc, bot, _ = make({1: 0, 2: 0, 3: 0, 4: 0})
     games = run(svc.start_rot_day(-1, 99))
     assert len(games) == 3 and all(g.kind == "rot" for g in games)
     assert len({g.id for g in games}) == 3
+    assert all(ROT_MIN_DURATION <= g.duration_sec <= ROT_MAX_DURATION for g in games)
     assert any("ДЕНЬ ГНИЕНИЯ" in t for t in bot.to(-1))
     run(svc.start_game(-1, 99, 600))
 
@@ -224,13 +231,14 @@ def test_rot_potato_cannot_be_defused_and_keeps_timer():
     assert run(svc.store.get_game(g.id)).holder_id == holder
     svc.bot.blocked.discard(other)
     res = run(svc.pass_potato(g.id, holder))
-    assert res.game.duration_sec == 3600 and res.new_holder == other
+    assert res.game.duration_sec == g.duration_sec and res.new_holder == other
 
 
-def test_rot_potatoes_always_rot_someone():
+def test_rot_potatoes_always_rot_someone(monkeypatch):
+    monkeypatch.setattr("potato.service.roll_spawn_count", lambda rng: 3)
     svc, bot, clock = make({1: 0, 2: 0, 3: 0})
     run(svc.start_rot_day(-1, 99))
-    clock.t += 3601
+    clock.t += ROT_MAX_DURATION + 1
     out = run(svc.resolve_expired())
     assert len(out) == 3
     assert any("дня гниения" in t for t in bot.to(-1))
@@ -314,12 +322,22 @@ def test_auto_game_does_not_trigger_member_cooldown():
     assert run(svc.store.cooldown_remaining(-7, GROUP_COOLDOWN_SECONDS)) == 0
 
 
-def test_tick_launches_planned_rot_spawns():
+def test_tick_launches_planned_rot_spawns(monkeypatch):
+    monkeypatch.setattr("potato.store.roll_spawn_count", lambda *a, **k: 3)
     svc, bot, clock = make({1: 0, 2: 0, 3: 0}, auto_chat_id=-7, utc_offset=0)
     base = 1_700_000_000 - (1_700_000_000 % 86400)
     clock.t = base + 10 * 3600 + 1
     day = svc._local(int(clock.t)).date().isoformat()
-    run(svc.store.plan_rot_day(day, int(clock.t), base + 21 * 3600, 1.0))
+    run(
+        svc.store.plan_rot_day(
+            day,
+            int(clock.t),
+            base + 21 * 3600,
+            1.0,
+            announce_from=int(clock.t),
+            announce_to=int(clock.t),
+        )
+    )
     run(svc.store.set_auto("auto", base + 10**7))
     while clock.t < base + 21 * 3600:
         run(svc.tick())
@@ -332,7 +350,8 @@ def test_tick_launches_planned_rot_spawns():
     assert len([g for g in run(svc.store.active_games()) if g.kind == "rot"]) == 3
 
 
-def _plan_due_spawns(svc, clock):
+def _plan_due_spawns(svc, clock, monkeypatch):
+    monkeypatch.setattr("potato.store.roll_spawn_count", lambda *a, **k: 3)
     base = 1_700_000_000 - (1_700_000_000 % 86400)
     clock.t = base + 19 * 3600
     day = svc._local(int(clock.t)).date().isoformat()
@@ -342,9 +361,9 @@ def _plan_due_spawns(svc, clock):
     return day
 
 
-def test_failed_rot_spawn_stays_pending_and_is_retried(caplog):
+def test_failed_rot_spawn_stays_pending_and_is_retried(caplog, monkeypatch):
     svc, _, clock = make({}, auto_chat_id=-7, utc_offset=0)
-    _plan_due_spawns(svc, clock)
+    _plan_due_spawns(svc, clock, monkeypatch)
     with caplog.at_level("WARNING"):
         run(svc.tick())
     assert run(svc.store.active_games()) == []
@@ -360,9 +379,9 @@ def test_failed_rot_spawn_stays_pending_and_is_retried(caplog):
     assert run(svc.store.due_rot_spawns(10**6)) == []
 
 
-def test_rot_spawn_is_skipped_for_good_after_max_lateness(caplog):
+def test_rot_spawn_is_skipped_for_good_after_max_lateness(caplog, monkeypatch):
     svc, _, clock = make({}, auto_chat_id=-7, utc_offset=0)
-    _plan_due_spawns(svc, clock)
+    _plan_due_spawns(svc, clock, monkeypatch)
     run(svc.tick())
     clock.t += ROT_MAX_LATENESS + 1
     with caplog.at_level("ERROR"):
@@ -503,7 +522,7 @@ def test_strong_rot_spawns_only_while_active_and_respects_roll_interval():
     games = run(svc.store.active_games())
     assert len(games) == 3
     assert {g.kind for g in games} == {"rot"}
-    assert {g.duration_sec for g in games} == {3600}
+    assert all(ROT_MIN_DURATION <= g.duration_sec <= ROT_MAX_DURATION for g in games)
     assert len({g.holder_id for g in games}) == 3
     run(svc.tick())
     assert len(run(svc.store.active_games())) == 3
@@ -540,7 +559,8 @@ def test_strong_rot_skips_unreachable_users():
 def test_paid_launch_creates_rot_potato_and_counts_start():
     svc, bot, _ = make({1: 0, 2: 0})
     game = run(svc.launch_paid(2))
-    assert game.kind == "rot" and game.duration_sec == 3600
+    assert game.kind == "rot"
+    assert ROT_MIN_DURATION <= game.duration_sec <= ROT_MAX_DURATION
     assert run(svc.store.get_stats(2))["started"] == 1
     assert any("заплатил" in t for _, t in bot.sent)
     second = run(svc.launch_paid(2))

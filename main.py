@@ -15,6 +15,7 @@ from code_refresh import run_code_refresh_loop
 from config import ADMIN_ID, ALLOWED_CHAT_ID, BOT_TOKEN, DB_NAME, POTATO_UTC_OFFSET
 from handlers import admin, payments, user
 from handlers.user.potato import pass_markup
+from middlewares.activity import ActivityMiddleware
 from middlewares.chat_check import AllowedChatMiddleware
 from middlewares.throttling import ThrottlingMiddleware
 from potato.service import PotatoService
@@ -61,6 +62,7 @@ async def main() -> None:
     dp.shutdown.register(throttling_middleware.stop)
 
     dp.update.outer_middleware(ErrorGuardMiddleware())
+    dp.update.outer_middleware(ActivityMiddleware(potato_service))
     dp.message.middleware(AllowedChatMiddleware())
     dp.message.middleware(throttling_middleware)
 

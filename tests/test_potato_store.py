@@ -73,12 +73,12 @@ def test_single_auto_game_but_many_member_games_per_chat():
     run(store.create_game(-200, 1, 600))
 
 
-def test_candidates_exclude_banned_admin_and_optouts():
+def test_candidates_exclude_banned_and_optouts_but_include_owner():
     store, _ = make_store({1: 0, 2: 0, 3: 1, 4: 1, 5: 0, 99: 0}, banned=(5,))
     run(store.set_enabled(3, False))
     game = run(store.create_game(-1, 99, 600))
-    cands = run(store.candidates(game.id, set(), admin_id=99))
-    assert sorted(cands) == [1, 2, 4]
+    cands = run(store.candidates(game.id, set()))
+    assert sorted(cands) == [1, 2, 4, 99]
 
 
 def test_anyone_can_leave_and_return():
@@ -86,9 +86,9 @@ def test_anyone_can_leave_and_return():
     run(store.set_enabled(1, False))
     assert run(store.get_stats(1))["enabled"] == 0
     game = run(store.create_game(-1, 9, 600))
-    assert run(store.candidates(game.id, set(), None)) == []
+    assert run(store.candidates(game.id, set())) == []
     run(store.set_enabled(1, True))
-    assert run(store.candidates(game.id, set(), None)) == [1]
+    assert run(store.candidates(game.id, set())) == [1]
 
 
 def test_vip_share_settings():
@@ -143,7 +143,7 @@ def test_active_holders_and_eligible_users():
     store, _ = make_store({1: 0, 2: 0, 99: 0})
     g = run(store.assign_holder(run(store.create_game(-1, 99, 600)).id, 2)).game
     assert run(store.active_holders()) == {2}
-    assert sorted(run(store.eligible_users(99))) == [1, 2]
+    assert sorted(run(store.eligible_users())) == [1, 2, 99]
     run(store.cancel_game(g.id))
     assert run(store.active_holders()) == set()
 
@@ -174,21 +174,78 @@ def test_rot_games_are_parallel_with_fixed_hour_and_never_defuse():
     assert run(store.get_stats(1))["rot_exploded"] == 1
 
 
-def test_plan_rot_day_is_persistent_and_bounded():
+def _spawn_rows(store, day):
+    return store._keep.execute(
+        "SELECT spawn_at FROM potato_rot_spawns WHERE day = ?", (day,)
+    ).fetchall()
+
+
+def test_plan_rot_day_is_persistent_and_bounded(monkeypatch):
+    monkeypatch.setattr("potato.store.roll_spawn_count", lambda *a, **k: 3)
     store, clock = make_store({1: 0})
     start, end = int(clock.t), int(clock.t) + 36000
     assert run(store.plan_rot_day("d1", start, end, 0.0)) is False
     assert run(store.plan_rot_day("d1", start, end, 1.0)) is False
     assert run(store.plan_rot_day("d2", start, end, 1.0)) is True
     assert run(store.plan_rot_day("d2", start, end, 0.0)) is True
-    rows = store._keep.execute(
-        "SELECT spawn_at FROM potato_rot_spawns WHERE day = 'd2'"
-    ).fetchall()
+    rows = _spawn_rows(store, "d2")
     assert len(rows) == 3 and all(start <= r[0] < end for r in rows)
     assert run(store.plan_rot_day("d3", end - 100, end, 1.0)) is False
 
 
-def test_due_spawns_lifecycle():
+def test_plan_rot_day_announces_in_morning_window_before_spawns():
+    store, clock = make_store({1: 0})
+    base = int(clock.t)
+    lo, hi = base + 3600, base + 3 * 3600
+    assert run(
+        store.plan_rot_day(
+            "d", base, base + 40000, 1.0, announce_from=lo, announce_to=hi
+        )
+    )
+    announce_at = run(store.rot_day_info("d"))[1]
+    assert lo <= announce_at <= hi
+    assert run(store.rot_day_info("d"))[2] is False
+    assert all(r[0] >= announce_at + 600 for r in _spawn_rows(store, "d"))
+    assert run(store.pending_rot_announces()) == []
+    clock.t = announce_at
+    assert run(store.pending_rot_announces()) == ["d"]
+    run(store.mark_rot_announced("d"))
+    assert run(store.pending_rot_announces()) == []
+
+
+def test_late_start_announces_immediately():
+    store, clock = make_store({1: 0})
+    base = int(clock.t)
+    run(
+        store.plan_rot_day(
+            "d",
+            base,
+            base + 40000,
+            1.0,
+            announce_from=base - 9000,
+            announce_to=base - 100,
+        )
+    )
+    assert run(store.rot_day_info("d"))[1] == base
+    assert run(store.pending_rot_announces()) == ["d"]
+
+
+def test_spawn_count_chain_is_decreasing_and_capped():
+    import random
+
+    from potato.store import ROT_MAX_SPAWNS, roll_spawn_count
+
+    rng = random.Random(5)
+    counts = [roll_spawn_count(rng) for _ in range(4000)]
+    assert min(counts) == 1 and max(counts) <= ROT_MAX_SPAWNS
+    shares = [counts.count(n) / len(counts) for n in range(1, 5)]
+    assert shares[0] > shares[1] > shares[2] > shares[3] > 0
+    assert roll_spawn_count(rng, chance=0.0) == 1
+    assert roll_spawn_count(rng, chance=1.0, cap=4) == 4
+
+
+def test_due_spawns_lifecycle(monkeypatch):
+    monkeypatch.setattr("potato.store.roll_spawn_count", lambda *a, **k: 3)
     store, clock = make_store({1: 0})
     start = int(clock.t)
     run(store.plan_rot_day("d", start, start + 36000, 1.0))
@@ -276,6 +333,7 @@ def test_explode_not_before_deadline():
 def test_streak_resets_on_explosion_and_boom_5():
     store, clock = make_store({1: 0, 2: 0})
     for i in range(5):
+        run(store.touch_activity(2))
         g = run(store.assign_holder(run(store.create_game(-10 - i, 1, 600)).id, 2)).game
         clock.t += 601
         run(store.explode_if_expired(g.id))
@@ -308,10 +366,10 @@ def test_nobody_left_defuses():
 def test_history_prefers_fresh_players_then_falls_back():
     store, _ = make_store({1: 0, 2: 0, 3: 0})
     g = run(store.assign_holder(run(store.create_game(-1, 9, 600)).id, 1)).game
-    assert sorted(run(store.candidates(g.id, {1}, None))) == [2, 3]
+    assert sorted(run(store.candidates(g.id, {1}))) == [2, 3]
     run(store.pass_potato(g.id, 1, 2))
     run(store.pass_potato(g.id, 2, 3))
-    assert sorted(run(store.candidates(g.id, {3}, None))) == [1, 2]
+    assert sorted(run(store.candidates(g.id, {3}))) == [1, 2]
 
 
 def test_active_games_listing_and_cancel():
@@ -342,7 +400,7 @@ def test_left_non_vip_cannot_receive_potato():
     game = run(store.create_game(-1, 2, 600))
     with pytest.raises(PotatoError):
         run(store.assign_holder(game.id, 1))
-    assert run(store.candidates(game.id, set(), None)) == [2]
+    assert run(store.candidates(game.id, set())) == [2]
 
 
 def test_file_db_reuses_connection_and_closes(tmp_path):

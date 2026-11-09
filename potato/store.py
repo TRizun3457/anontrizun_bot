@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .achievements import RULES
+from .randomness import candidate_weight, weighted_order
 from .theme import fmt_duration
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "database_rs" / "migrations"
@@ -18,6 +19,9 @@ EXTRAS_MIGRATION = MIGRATIONS_DIR / "0004_potato_extras.sql"
 INDEXES_MIGRATION = MIGRATIONS_DIR / "0005_potato_indexes.sql"
 SLOTS_MIGRATION = MIGRATIONS_DIR / "0008_potato_game_slots.sql"
 MANY_MIGRATION = MIGRATIONS_DIR / "0009_potato_many_member_games.sql"
+ACTIVITY_MIGRATION = MIGRATIONS_DIR / "0010_potato_activity_and_rot_days.sql"
+ACTIVITY_VERSION = 10
+DORMANT_AFTER = 3
 SPAWN_PENDING = 0
 SPAWN_LAUNCHED = 1
 SPAWN_SKIPPED = 2
@@ -41,12 +45,16 @@ SHARE_FIELDS = (
     "share_exploded",
     "share_streak",
     "share_achievements",
+    "share_fastest",
 )
 
 MIN_DURATION = 10 * 60
 MAX_DURATION = 6 * 60 * 60
-ROT_DURATION = 60 * 60
-ROT_SPAWNS = 3
+ROT_MIN_DURATION = 15 * 60
+ROT_MAX_DURATION = 60 * 60
+ROT_MAX_SPAWNS = 6
+ROT_CHAIN_CHANCE = 0.6
+ROT_SPAWN_GAP = 10 * 60
 
 
 class PotatoError(Exception):
@@ -116,6 +124,27 @@ def random_duration(rng: random.Random | None = None) -> int:
     return r.randint(MIN_DURATION, MAX_DURATION)
 
 
+def random_rot_duration(rng: random.Random | None = None) -> int:
+    r = rng or random
+    return r.randint(ROT_MIN_DURATION, ROT_MAX_DURATION)
+
+
+def clamp_rot_duration(seconds: int) -> int:
+    return max(ROT_MIN_DURATION, min(ROT_MAX_DURATION, int(seconds)))
+
+
+def roll_spawn_count(
+    rng: random.Random | None = None,
+    chance: float = ROT_CHAIN_CHANCE,
+    cap: int = ROT_MAX_SPAWNS,
+) -> int:
+    r = rng or random
+    count = 1
+    while count < cap and r.random() < chance**count:
+        count += 1
+    return count
+
+
 class PotatoStore:
     def __init__(
         self,
@@ -126,7 +155,7 @@ class PotatoStore:
     ) -> None:
         self.db_path = db_path
         self._clock = clock
-        self._rng = rng or random.Random()
+        self._rng = rng or random.SystemRandom()
         self._lock = asyncio.Lock()
         self._keep: sqlite3.Connection | None = None
         if db_path == ":memory:":
@@ -189,6 +218,11 @@ class PotatoStore:
             conn.executescript(INDEXES_MIGRATION.read_text(encoding="utf-8"))
             conn.executescript(SLOTS_MIGRATION.read_text(encoding="utf-8"))
             conn.executescript(MANY_MIGRATION.read_text(encoding="utf-8"))
+            activity_applied = conn.execute(
+                "SELECT 1 FROM potato_schema WHERE version = ?", (ACTIVITY_VERSION,)
+            ).fetchone()
+            if not activity_applied:
+                conn.executescript(ACTIVITY_MIGRATION.read_text(encoding="utf-8"))
 
         def verify(conn: sqlite3.Connection) -> None:
             tables = {
@@ -203,6 +237,11 @@ class PotatoStore:
                 if "potato_games" in tables
                 else set()
             )
+            player_columns = (
+                {row[1] for row in conn.execute("PRAGMA table_info(potato_players)")}
+                if "potato_players" in tables
+                else set()
+            )
             indexes = {
                 row[0]
                 for row in conn.execute(
@@ -213,11 +252,16 @@ class PotatoStore:
                 indexes
                 & {"idx_potato_one_normal_per_chat", "idx_potato_one_member_per_chat"}
             )
-            if missing or "kind" not in columns or stale:
+            if (
+                missing
+                or "kind" not in columns
+                or "dormant" not in player_columns
+                or stale
+            ):
                 raise RuntimeError(
                     "Схема игры «Гнилая картошка» не создана миграциями Rust-модуля. "
                     "Пересоберите модуль (maturin develop) и запустите бота снова. "
-                    f"Не хватает: {sorted(missing) or 'актуальные индексы potato_games (миграции 0008–0009)'}"
+                    f"Не хватает: {sorted(missing) or 'актуальные индексы potato_games (миграции 0008–0010)'}"
                 )
 
         conn = self._conn()
@@ -258,6 +302,7 @@ class PotatoStore:
             WHERE u.user_id = ?
               AND u.user_id NOT IN (SELECT user_id FROM banned)
               AND COALESCE(p.enabled, 1) = 1
+              AND COALESCE(p.dormant, 0) = 0
             """,
             (user_id,),
         ).fetchone()
@@ -426,9 +471,9 @@ class PotatoStore:
 
         return await self._run(fn)
 
-    async def eligible_users(self, admin_id: int | None) -> list[int]:
+    async def eligible_users(self) -> list[int]:
         def fn(conn: sqlite3.Connection) -> list[int]:
-            return self._candidates(conn, set(), admin_id)
+            return self._candidates(conn, set(), frozenset())
 
         return await self._run(fn)
 
@@ -447,26 +492,32 @@ class PotatoStore:
         self,
         conn: sqlite3.Connection,
         exclude: set[int],
-        admin_id: int | None,
+        busy: frozenset[int] | set[int],
     ) -> list[int]:
+        now = self._now()
         rows = conn.execute(
             """
-            SELECT u.user_id FROM users u
+            SELECT u.user_id, p.last_received_at FROM users u
             LEFT JOIN potato_players p ON p.user_id = u.user_id
             WHERE u.user_id NOT IN (SELECT user_id FROM banned)
               AND COALESCE(p.enabled, 1) = 1
+              AND COALESCE(p.dormant, 0) = 0
             """
         ).fetchall()
-        return [
-            r["user_id"]
-            for r in rows
-            if r["user_id"] not in exclude and r["user_id"] != admin_id
-        ]
+        ids: list[int] = []
+        weights: list[float] = []
+        for r in rows:
+            uid = r["user_id"]
+            if uid in exclude:
+                continue
+            last = r["last_received_at"]
+            ids.append(uid)
+            weights.append(
+                candidate_weight(None if last is None else now - last, uid in busy)
+            )
+        return weighted_order(ids, weights, self._rng)
 
-    async def candidates(
-        self, game_id: int, extra_exclude: set[int], admin_id: int | None
-    ) -> list[int]:
-
+    async def candidates(self, game_id: int, extra_exclude: set[int]) -> list[int]:
         def fn(conn: sqlite3.Connection) -> list[int]:
             seen = {
                 r["user_id"]
@@ -482,15 +533,10 @@ class PotatoStore:
                     (game_id,),
                 )
             }
-            fresh = self._candidates(conn, seen | extra_exclude, admin_id)
+            fresh = self._candidates(conn, seen | extra_exclude, busy)
             if fresh:
-                self._rng.shuffle(fresh)
-                fresh.sort(key=lambda uid: uid in busy)
                 return fresh
-            again = self._candidates(conn, extra_exclude, admin_id)
-            self._rng.shuffle(again)
-            again.sort(key=lambda uid: uid in busy)
-            return again
+            return self._candidates(conn, extra_exclude, busy)
 
         return await self._run(fn)
 
@@ -534,7 +580,11 @@ class PotatoStore:
     async def create_game(
         self, chat_id: int, starter_id: int, duration_sec: int, kind: str = "normal"
     ) -> Game:
-        duration = ROT_DURATION if kind == "rot" else clamp_duration(duration_sec)
+        duration = (
+            clamp_rot_duration(duration_sec)
+            if kind == "rot"
+            else clamp_duration(duration_sec)
+        )
 
         def fn(conn: sqlite3.Connection) -> Game:
             exists = (
@@ -598,8 +648,8 @@ class PotatoStore:
             )
             self._ensure_player(conn, user_id)
             conn.execute(
-                "UPDATE potato_players SET received = received + 1 WHERE user_id = ?",
-                (user_id,),
+                "UPDATE potato_players SET received = received + 1, last_received_at = ? WHERE user_id = ?",
+                (now, user_id),
             )
             granted = self._grant(conn, user_id)
             game = _game(
@@ -642,6 +692,8 @@ class PotatoStore:
             conn.execute(
                 """UPDATE potato_players SET
                      passed = passed + 1,
+                     miss_streak = 0,
+                     dormant = 0,
                      pass_streak = pass_streak + 1,
                      best_pass_streak = MAX(best_pass_streak, pass_streak + 1),
                      fastest_pass_sec = CASE
@@ -671,8 +723,8 @@ class PotatoStore:
                 )
                 self._ensure_player(conn, to_user)
                 conn.execute(
-                    "UPDATE potato_players SET received = received + 1 WHERE user_id = ?",
-                    (to_user,),
+                    "UPDATE potato_players SET received = received + 1, last_received_at = ? WHERE user_id = ?",
+                    (now, to_user),
                 )
                 receiver_granted = self._grant(conn, to_user)
             new_game = _game(
@@ -757,8 +809,11 @@ class PotatoStore:
             self._ensure_player(conn, victim)
             conn.execute(
                 """UPDATE potato_players SET exploded = exploded + 1, pass_streak = 0,
-                   rot_exploded = rot_exploded + ? WHERE user_id = ?""",
-                (1 if game.kind == "rot" else 0, victim),
+                   rot_exploded = rot_exploded + ?,
+                   miss_streak = miss_streak + 1,
+                   dormant = CASE WHEN miss_streak + 1 >= ? THEN 1 ELSE dormant END
+                   WHERE user_id = ?""",
+                (1 if game.kind == "rot" else 0, DORMANT_AFTER, victim),
             )
             granted = self._grant(conn, victim)
             conn.execute(
@@ -822,6 +877,8 @@ class PotatoStore:
         window_end: int,
         probability: float,
         force: bool = False,
+        announce_from: int | None = None,
+        announce_to: int | None = None,
     ) -> bool:
         def fn(conn: sqlite3.Connection) -> bool:
             row = conn.execute(
@@ -829,23 +886,92 @@ class PotatoStore:
             ).fetchone()
             if row is not None:
                 return bool(row["is_rot"])
-            start = max(window_start, self._now())
-            span = window_end - start
-            is_rot = span >= ROT_SPAWNS * 600 and (
-                force or self._rng.random() < probability
-            )
+            now = self._now()
+            is_rot = force or self._rng.random() < probability
+            announce_at = 0
+            spawn_start = max(window_start, now)
+            if is_rot and announce_from is not None:
+                lo = max(announce_from, now)
+                hi = max(lo, announce_to if announce_to is not None else lo)
+                announce_at = self._rng.randint(lo, hi)
+                spawn_start = max(spawn_start, announce_at + ROT_SPAWN_GAP)
+            span = window_end - spawn_start
+            count = min(roll_spawn_count(self._rng), span // ROT_SPAWN_GAP)
+            is_rot = is_rot and count >= 1
             conn.execute(
-                "INSERT INTO potato_rot_days (day, is_rot) VALUES (?, ?)",
-                (day, 1 if is_rot else 0),
+                "INSERT INTO potato_rot_days (day, is_rot, announce_at, announced) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    day,
+                    1 if is_rot else 0,
+                    announce_at,
+                    0 if is_rot and announce_at else 1,
+                ),
             )
             if is_rot:
-                times = sorted(self._rng.sample(range(start, window_end), ROT_SPAWNS))
+                times = sorted(self._rng.sample(range(spawn_start, window_end), count))
                 for at in times:
                     conn.execute(
                         "INSERT INTO potato_rot_spawns (day, spawn_at) VALUES (?, ?)",
                         (day, at),
                     )
             return is_rot
+
+        return await self._run(fn)
+
+    async def pending_rot_announces(self) -> list[str]:
+        def fn(conn: sqlite3.Connection) -> list[str]:
+            return [
+                r["day"]
+                for r in conn.execute(
+                    "SELECT day FROM potato_rot_days "
+                    "WHERE is_rot = 1 AND announced = 0 AND announce_at <= ? "
+                    "ORDER BY announce_at",
+                    (self._now(),),
+                )
+            ]
+
+        return await self._run(fn)
+
+    async def mark_rot_announced(self, day: str) -> None:
+        def fn(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE potato_rot_days SET announced = 1 WHERE day = ?", (day,)
+            )
+
+        await self._run(fn)
+
+    async def rot_day_info(self, day: str) -> tuple[bool, int, bool] | None:
+        def fn(conn: sqlite3.Connection) -> tuple[bool, int, bool] | None:
+            row = conn.execute(
+                "SELECT is_rot, announce_at, announced FROM potato_rot_days WHERE day = ?",
+                (day,),
+            ).fetchone()
+            if row is None:
+                return None
+            return bool(row["is_rot"]), row["announce_at"], bool(row["announced"])
+
+        return await self._run(fn)
+
+    async def touch_activity(self, user_id: int) -> bool:
+        def fn(conn: sqlite3.Connection) -> bool:
+            cur = conn.execute(
+                "UPDATE potato_players SET miss_streak = 0, dormant = 0 "
+                "WHERE user_id = ? AND (miss_streak > 0 OR dormant = 1)",
+                (user_id,),
+            )
+            return cur.rowcount > 0
+
+        return await self._run(fn)
+
+    async def flagged_users(self) -> set[int]:
+        def fn(conn: sqlite3.Connection) -> set[int]:
+            return {
+                r["user_id"]
+                for r in conn.execute(
+                    "SELECT user_id FROM potato_players WHERE miss_streak > 0 OR dormant = 1"
+                )
+            }
 
         return await self._run(fn)
 

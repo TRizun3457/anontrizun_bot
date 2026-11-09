@@ -19,6 +19,10 @@ def build_share_text(stats: dict[str, Any], is_vip: bool, decor: str = "") -> st
         lines.append(f"☠️ Сгнило: <b>{stats['exploded']}</b>")
     if shown("share_streak"):
         lines.append(f"🔥 Лучшая серия передач: <b>{stats['best_pass_streak']}</b>")
+    if shown("share_fastest") and stats.get("fastest_pass_sec") is not None:
+        lines.append(
+            f"⚡ Самая быстрая передача: <b>{stats['fastest_pass_sec']} с.</b>"
+        )
     if shown("share_achievements"):
         lines.append(
             f"🏆 Достижений игры: <b>{len(stats['achievements'])}/{len(POTATO_ACHIEVEMENTS)}</b>"
