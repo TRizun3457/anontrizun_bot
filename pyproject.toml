@@ -20,9 +20,28 @@ dev = [
 requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "database_rs/Cargo.toml" },
+    { file = "database_rs/Cargo.lock" },
+    { file = "database_rs/build.rs" },
+    { file = "database_rs/src/**/*.rs" },
+    { file = "database_rs/migrations/*.sql" },
+]
+
 [tool.maturin]
 manifest-path = "database_rs/Cargo.toml"
 module-name = "database"
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "database_rs/Cargo.toml" },
+    { file = "database_rs/build.rs" },
+    { file = "database_rs/src/**/*.rs" },
+    { file = "database_rs/migrations/*.sql" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

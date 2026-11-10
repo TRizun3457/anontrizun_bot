@@ -13,6 +13,8 @@ logger = logging.getLogger("rust_build")
 ROOT = Path(__file__).resolve().parent
 RUST_DIR = ROOT / "database_rs"
 MODULE_NAME = "database"
+PROJECT_NAME = "anontrizun-bot"
+PROJECT_NAME = "anontrizun-bot"
 SOURCE_GLOBS = ("src/**/*.rs", "migrations/*.sql", "Cargo.toml", "build.rs")
 BUILD_TIMEOUT_SECONDS = 1800
 
@@ -70,30 +72,57 @@ def _run(cmd: Iterable[str]) -> bool:
     return result.returncode == 0
 
 
+def build_commands(
+    has_maturin: list[str] | None, uv_path: str | None
+) -> list[list[str]]:
+    commands: list[list[str]] = []
+    if has_maturin:
+        commands.append([*has_maturin, "develop", "--release"])
+    if uv_path:
+        commands.append([uv_path, "sync", "--reinstall-package", PROJECT_NAME])
+        commands.append(
+            [uv_path, "run", "--with", "maturin", "maturin", "develop", "--release"]
+        )
+    return commands
+
+
+def build_commands() -> list[list[str]]:
+    commands: list[list[str]] = []
+    maturin = _maturin_command()
+    if maturin is not None:
+        commands.append([*maturin, "develop", "--release"])
+    uv = shutil.which("uv")
+    if uv is not None:
+        commands.append([uv, "sync", "--reinstall-package", PROJECT_NAME])
+    return commands
+
+
 def build_module() -> bool:
     if shutil.which("cargo") is None:
         logger.error(
             "Не найден cargo: установите Rust (https://rustup.rs) и перезапустите бота."
         )
         return False
-    command = _maturin_command()
-    if command is None:
+    commands = build_commands()
+    if not commands:
         logger.info("Устанавливаю maturin...")
-        if not _run([sys.executable, "-m", "pip", "install", "maturin"]):
-            logger.error("Не удалось установить maturin: pip install maturin")
-            return False
-        command = _maturin_command()
-        if command is None:
-            return False
-    logger.info("Собираю Rust-модуль (первый раз может занять несколько минут)...")
-    try:
-        ok = _run([*command, "develop", "--release"])
-    except (OSError, subprocess.SubprocessError):
-        logger.exception("Сборка Rust-модуля прервалась")
+        if _run([sys.executable, "-m", "pip", "install", "maturin"]):
+            commands = build_commands()
+    if not commands:
+        logger.error("Нет ни maturin, ни uv: установите maturin (pip install maturin).")
         return False
-    if ok:
-        importlib.invalidate_caches()
-    return ok
+    logger.info("Собираю Rust-модуль (первый раз может занять несколько минут)...")
+    for command in commands:
+        try:
+            ok = _run(command)
+        except (OSError, subprocess.SubprocessError):
+            logger.exception("Сборка Rust-модуля прервалась: %s", command)
+            continue
+        if ok:
+            importlib.invalidate_caches()
+            return True
+        logger.warning("Команда сборки не удалась: %s", " ".join(command))
+    return False
 
 
 def ensure_fresh_build() -> None:
