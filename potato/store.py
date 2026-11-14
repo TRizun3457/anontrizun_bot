@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import random
 import sqlite3
 import time
@@ -11,6 +12,8 @@ from .achievements import RULES
 from .randomness import candidate_weight, weighted_order
 from .theme import fmt_duration
 
+logger = logging.getLogger(__name__)
+
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "database_rs" / "migrations"
 BASE_MIGRATION = MIGRATIONS_DIR / "0002_potato.sql"
 EVENTS_MIGRATION = MIGRATIONS_DIR / "0003_potato_events.sql"
@@ -21,6 +24,7 @@ SLOTS_MIGRATION = MIGRATIONS_DIR / "0008_potato_game_slots.sql"
 MANY_MIGRATION = MIGRATIONS_DIR / "0009_potato_many_member_games.sql"
 ACTIVITY_MIGRATION = MIGRATIONS_DIR / "0010_potato_activity_and_rot_days.sql"
 ACTIVITY_VERSION = 10
+ANNOUNCED_MIGRATION = MIGRATIONS_DIR / "0011_potato_announced.sql"
 DORMANT_AFTER = 3
 SPAWN_PENDING = 0
 SPAWN_LAUNCHED = 1
@@ -158,6 +162,7 @@ class PotatoStore:
         self._rng = rng or random.SystemRandom()
         self._lock = asyncio.Lock()
         self._keep: sqlite3.Connection | None = None
+        self._warned_announced = False
         if db_path == ":memory:":
             self._keep = self._open()
 
@@ -223,6 +228,7 @@ class PotatoStore:
             ).fetchone()
             if not activity_applied:
                 conn.executescript(ACTIVITY_MIGRATION.read_text(encoding="utf-8"))
+            conn.executescript(ANNOUNCED_MIGRATION.read_text(encoding="utf-8"))
 
         def verify(conn: sqlite3.Connection) -> None:
             tables = {
@@ -323,6 +329,51 @@ class PotatoStore:
             if cur.rowcount > 0:
                 granted.append(ach_id)
         return granted
+
+    async def claim_announcements(self, user_id: int, ids: list[str]) -> list[str]:
+        """Атомарно помечает достижения объявленными и возвращает только те,
+        что раньше не объявлялись. Отметка хранится в БД, поэтому переживает
+        перезапуск бота. Если таблицы ещё нет (устаревший Rust-модуль), отметки
+        не ведутся и объявляются все переданные достижения."""
+
+        def fn(conn: sqlite3.Connection) -> list[str]:
+            claimed: list[str] = []
+            for ach_id in dict.fromkeys(ids):
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO potato_announced (user_id, ach_id) VALUES (?, ?)",
+                    (user_id, ach_id),
+                )
+                if cur.rowcount > 0:
+                    claimed.append(ach_id)
+            return claimed
+
+        try:
+            return await self._run(fn)
+        except sqlite3.OperationalError as exc:
+            if "potato_announced" not in str(exc):
+                raise
+            if not self._warned_announced:
+                self._warned_announced = True
+                logger.warning(
+                    "potato: нет таблицы potato_announced — пересоберите Rust-модуль "
+                    "(maturin develop --release). Защита от повторных анонсов "
+                    "достижений работает только в памяти."
+                )
+            return list(dict.fromkeys(ids))
+
+    async def release_announcements(self, user_id: int, ids: list[str]) -> None:
+        def fn(conn: sqlite3.Connection) -> None:
+            for ach_id in ids:
+                conn.execute(
+                    "DELETE FROM potato_announced WHERE user_id = ? AND ach_id = ?",
+                    (user_id, ach_id),
+                )
+
+        try:
+            await self._run(fn)
+        except sqlite3.OperationalError as exc:
+            if "potato_announced" not in str(exc):
+                raise
 
     async def get_stats(self, user_id: int) -> dict[str, Any]:
         def fn(conn: sqlite3.Connection) -> dict[str, Any]:

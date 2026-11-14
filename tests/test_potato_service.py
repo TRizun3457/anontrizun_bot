@@ -398,6 +398,39 @@ def test_achievement_announcement_is_not_repeated():
     assert sum("Новое достижение" in t for t in bot.to(1)) == 1
 
 
+def test_achievement_announcement_survives_restart():
+    svc, bot, _ = make({1: 0})
+    run(svc._announce_achievements(1, ["potato_first"]))
+    restarted = PotatoService(
+        svc.store, bot, admin_id=99, pass_markup=lambda gid: f"kb{gid}"
+    )
+    run(restarted._announce_achievements(1, ["potato_first"]))
+    run(restarted._announce_achievements(1, ["potato_first", "potato_pass_1"]))
+    texts = [t for t in bot.to(1) if "Новое достижение" in t]
+    assert len(texts) == 2
+    assert "Первая картошка" in texts[0] and "Первая картошка" not in texts[1]
+
+
+def test_failed_announcement_can_be_retried():
+    bot = FakeBot()
+    svc, bot, _ = make({1: 0}, bot)
+    bot.fail_messages.add(1)
+    run(svc._announce_achievements(1, ["potato_first"]))
+    assert bot.to(1) == []
+    bot.fail_messages.clear()
+    run(svc._announce_achievements(1, ["potato_first"]))
+    assert sum("Новое достижение" in t for t in bot.to(1)) == 1
+
+
+def test_announcement_falls_back_to_memory_without_table():
+    svc, bot, _ = make({1: 0})
+    assert svc.store._keep is not None
+    svc.store._keep.execute("DROP TABLE potato_announced")
+    run(svc._announce_achievements(1, ["potato_first"]))
+    run(svc._announce_achievements(1, ["potato_first"]))
+    assert sum("Новое достижение" in t for t in bot.to(1)) == 1
+
+
 def test_tick_skips_when_day_decided_not_rot():
     svc, _, clock = make({1: 0, 2: 0}, auto_chat_id=-7, utc_offset=0)
     base = 1_700_000_000 - (1_700_000_000 % 86400)

@@ -229,10 +229,18 @@ class PotatoService:
         if not fresh:
             return
         self._announced.update((user_id, a) for a in fresh)
-        if not await self._say(
-            user_id, "🏆 <b>Новое достижение игры!</b>\n" + fmt_achievements(fresh)
-        ):
+        try:
+            claimed = await self.store.claim_announcements(user_id, fresh)
+        except BaseException:
             self._announced.difference_update((user_id, a) for a in fresh)
+            raise
+        if not claimed:
+            return
+        if not await self._say(
+            user_id, "🏆 <b>Новое достижение игры!</b>\n" + fmt_achievements(claimed)
+        ):
+            self._announced.difference_update((user_id, a) for a in claimed)
+            await self.store.release_announcements(user_id, claimed)
 
     async def start_game(
         self,
