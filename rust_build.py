@@ -59,6 +59,24 @@ def _maturin_command() -> list[str] | None:
     return [exe] if exe else None
 
 
+def _pip_available() -> bool:
+    probe = subprocess.run(
+        [sys.executable, "-m", "pip", "--version"],
+        capture_output=True,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+def _install_maturin() -> bool:
+    uv = shutil.which("uv")
+    if _pip_available():
+        return _run([sys.executable, "-m", "pip", "install", "maturin"])
+    if uv:
+        return _run([uv, "pip", "install", "--python", sys.executable, "maturin"])
+    return False
+
+
 def _run(cmd: Iterable[str]) -> bool:
     result = subprocess.run(
         list(cmd),
@@ -79,15 +97,20 @@ def build_module() -> bool:
     command = _maturin_command()
     if command is None:
         logger.info("Устанавливаю maturin...")
-        if not _run([sys.executable, "-m", "pip", "install", "maturin"]):
-            logger.error("Не удалось установить maturin: pip install maturin")
+        if not _install_maturin():
+            logger.error(
+                "Не удалось установить maturin (pip install maturin / uv pip install maturin)"
+            )
             return False
         command = _maturin_command()
         if command is None:
             return False
     logger.info("Собираю Rust-модуль (первый раз может занять несколько минут)...")
     try:
-        ok = _run([*command, "develop", "--release"])
+        develop = [*command, "develop", "--release"]
+        if not _pip_available() and shutil.which("uv"):
+            develop.append("--uv")
+        ok = _run(develop)
     except (OSError, subprocess.SubprocessError):
         logger.exception("Сборка Rust-модуля прервалась")
         return False
